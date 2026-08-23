@@ -1071,7 +1071,7 @@ deterministic, which is the case the form actually produces.
    `devDependencies`, so nothing hoists it and `npm run preview` cannot start. See
    Troubleshooting. It is a build-time tool and is never bundled into the Worker.
 
-### Phase 5: Verification and Documentation - PLANNED
+### Phase 5: Verification and Documentation - COMPLETED
 
 **Objective**: The whole feature is verified on the real runtime, the repo's documentation
 matches what was built, and the sprint is submitted.
@@ -1111,6 +1111,72 @@ matches what was built, and the sprint is submitted.
   corrected
 - This PRD updated: phase markers, Troubleshooting, Current Status, Acceptance Criteria
 - Exported chat transcript
+
+**Outcome** (2026-08-23):
+
+- `npm run test`: 12 files, 186 tests, all passing. `npm run lint` exits 0 with no output.
+  `npm run build` succeeds, and its route table is worth reading as evidence in itself: `○ /`,
+  `○ /login`, `○ /mcq`, `○ /register`, and `ƒ` on exactly the three `/api/auth/*` handlers.
+  Nine pages generated, no colocated `*.test.ts` file mistaken for a route.
+- The local `users` table was emptied first, so everything below is evidence produced by this
+  phase rather than left over from Phase 4.
+
+**The runtime walk**, `npm run preview` on `127.0.0.1:8787`:
+
+| Request | Result |
+|---|---|
+| `GET /` | 307 to `/login` |
+| `POST /register` as `Kusuma` | 201, id `bc74e18a…` |
+| `POST /register` as `kusuma` | 201, id `72fcc9ee…` - a **second** account |
+| `POST /register` as `Kusuma` with a brand-new email | 400 `Username already taken` |
+| `POST /register` with a taken email, new username | 400 `Email already registered` |
+| `POST /register` with `{}` | 400, five string-valued `fields`, one per field |
+| `POST /login` `Kusuma` + its own password | 200 |
+| `POST /login` `kusuma` + its own, different password | 200 |
+| `POST /login` `Kusuma` + `kusuma`'s password | 401 `Invalid credentials` |
+| `POST /logout` | 200 `{"success":true}`, no `Set-Cookie` |
+| `GET /login`, `/register`, `/mcq` | 200 each |
+
+The crossed-password result is the one worth dwelling on. `Kusuma` and `kusuma` each accept
+their own password and reject the other's, which proves in a single request that they are two
+independent accounts with independently salted hashes - not one row being matched loosely.
+
+**The stored rows**, read back with `wrangler d1 execute --local`:
+
+```
+Kusuma       pbkdf2-sha256$100000$0Aj4c1LVgYcuIhg6LlTtXA==$cIw+wCg/a1fNdQaOyaDghpAHh7ST/r73vHOkvBDPz4I=
+kusuma       pbkdf2-sha256$100000$p/X3t0Poxur7JZk2XZsMDQ==$SkrJ/tw2vFxQsCaCpEJVuCckARJ0r0JT0fw97R5MBa8=
+```
+
+Then a third account, `SamePassword`, was registered with **the identical password to
+`Kusuma`**, specifically so the per-user salt claim could be tested rather than asserted. The
+aggregate over all three rows: 3 rows, 3 distinct `password_hash` values, 0 rows containing any
+submitted plaintext, 3 rows in the OD3 format, 0 rows with a null timestamp. Two of those three
+share a password and still hash differently, which is the salt doing its job.
+
+**The served HTML** confirms the form shapes without needing a browser: `/register` carries
+exactly `firstName`, `lastName`, `username`, `email`, and `password` and the string "confirm"
+appears nowhere on the page; `/login` carries `username` and `password` with no `type="email"`
+and no "remember".
+
+**What Phase 5 could not do, and did not pretend to.** The agent has no browser. Three things
+therefore remain Kusuma's to confirm, and their criteria are left unticked rather than checked
+optimistically:
+
+1. That clicking Create account actually lands on `/mcq`. The component tests prove the form
+   *asks* the router for `/mcq`, and the API returns 201 on the real runtime, but a mocked
+   `useRouter` cannot prove arrival.
+2. The same for the login form.
+3. Dark mode on all four pages. What *was* verified is the thing that makes dark mode work: a
+   search of `src/components/auth` and `src/app` for hex colors, `rgb(`, `hsl(`, and Tailwind
+   palette literals such as `bg-white` or `text-gray-500` returns nothing. Every color is a
+   theme token, and `globals.css` defines them under `.dark`. That is a strong structural
+   argument and still not the same as looking at the page.
+
+**Two things fixed during this phase**, both environmental rather than product bugs: an orphaned
+`wrangler dev` process from Phase 4 held `.open-next/assets` and made the first `preview` build
+fail with `EBUSY`, and `AGENTS.md` still claimed no database and no testing framework were
+installed. Both are written up below.
 
 ---
 
@@ -1360,8 +1426,10 @@ agent's reminder to stop and hand that step over.
 
 ## Acceptance Criteria
 
-Pass or fail. Marked against observed behaviour rather than inspection. Most are marked in
-Phase 5; the Schema block was marked in Phase 1, since the phase produced the evidence for it.
+Pass or fail. Marked against observed behaviour rather than inspection, and marked in whichever
+phase produced the evidence rather than all at the end. **Every box below is ticked except
+three**, and those three - two form submissions landing on `/mcq`, and dark mode - need a browser
+that the agent does not have. They are called out again at the end of this section.
 
 **Schema** - all verified in Phase 1 against real `wrangler d1 execute --local` output
 
@@ -1389,8 +1457,9 @@ Phase 5; the Schema block was marked in Phase 1, since the phase produced the ev
 
 Phase 3 marks the criteria that are entirely about the HTTP contract, since route tests prove
 those outright. Phase 4 marks the ones that needed a real insert or real hashing, using the
-`npm run preview` run recorded in its outcome. Anything still open needs a browser or a second
-account, and belongs to Phase 5.
+`npm run preview` run recorded in its outcome. Phase 5 marks the last two, which needed a second
+account: the case-sensitive uniqueness check, and per-user salting proven with two rows sharing
+one password. Nothing in this block is open.
 
 - [x] A valid five-field submission creates a user and returns 201 with the wrapped `user`
       object carrying `id`, `firstName`, `lastName`, `username`, `email`, `createdAt`, and
@@ -1399,8 +1468,10 @@ account, and belongs to Phase 5.
       trimming, with the username's original casing intact, and `email` stored lowercased and
       trimmed - the 201 body is built from the `INSERT ... RETURNING` row, so it *is* the stored
       row, and a follow-up `SELECT` confirmed `KusumaBS` and `kusuma@example.com`
-- [ ] Registering `Kusuma` and then `kusuma` creates two rows and returns 201 both times, since
-      username uniqueness is case-sensitive
+- [x] Registering `Kusuma` and then `kusuma` creates two rows and returns 201 both times, since
+      username uniqueness is case-sensitive - done in Phase 5 on the real runtime, ids
+      `bc74e18a…` and `72fcc9ee…`, and each then logged in with its own password while
+      rejecting the other's
 - [x] Registering a taken username returns 400 `{ "error": "Username already taken" }` and
       creates no second row
 - [x] Registering a taken email returns 400 `{ "error": "Email already registered" }` and
@@ -1420,8 +1491,8 @@ account, and belongs to Phase 5.
 - [x] `password_hash` matches `pbkdf2-sha256$<digits>$<base64>$<base64>` - confirmed in D1 by
       prefix and by a length of exactly 90 characters
 - [x] Two users with the same password have different `password_hash` values, proving the salt
-      is per-user - proven at the route level by submitting the same password twice and
-      comparing what reached `createUser`, and again in the unit tests
+      is per-user - Phase 5 registered a third account with the identical password to `Kusuma`
+      and confirmed 3 rows with 3 distinct hashes in D1
 - [x] No success response contains `passwordHash` or `password_hash`
 - [x] No response body and no log line ever contains the plaintext password
 
@@ -1436,9 +1507,9 @@ account, and belongs to Phase 5.
 - [x] A username differing only in case from the registered one does **not** log in, and returns
       the ordinary 401, because casing is preserved rather than normalised - `kusumabs` against a
       stored `KusumaBS` returned 401 on the Workers runtime, with the real D1 lookup
-- [ ] A username with leading or trailing whitespace still logs in, because both register and
-      login trim - both trims are proven identical in the schema tests; logging in needs the real
-      stack
+- [x] A username with leading or trailing whitespace still logs in, because both register and
+      login trim - `"   Kusuma   "` returned 200 on the real runtime and resolved to the
+      `Kusuma` row
 - [x] A missing or malformed body returns 400 `Validation failed`
 - [x] A username or password that register would have rejected returns 401, not 400
 - [x] A 500 returns exactly `{ "error": "Could not sign in" }`
@@ -1450,16 +1521,19 @@ account, and belongs to Phase 5.
 
 **UI**
 
-Marked in Phase 4 where a component test or the `preview` run is genuine evidence. The two
-"submits successfully" criteria stay open deliberately: a mocked `useRouter` proves the form
-*asks* for `/mcq`, and only a browser proves it arrives.
+Marked in Phase 4 where a component test or the `preview` run is genuine evidence, and extended
+in Phase 5 with the served HTML. The two "submits successfully" criteria stay open deliberately:
+a mocked `useRouter` proves the form *asks* for `/mcq`, and only a browser proves it arrives.
+The agent has no browser, so those two and dark mode are Kusuma's to confirm.
 
 - [x] `/` redirects to `/login` - 307 with `Location: /login` on the Workers runtime
 - [ ] `/register` shows exactly five fields, with no confirm-password input, and submits
-      successfully, landing on `/mcq` - the five fields, the absent confirm input, and the
-      `/mcq` push are all proven; the arrival is a Phase 5 browser check
+      successfully, landing on `/mcq` - the served HTML carries exactly `firstName`,
+      `lastName`, `username`, `email`, `password` and the word "confirm" appears nowhere on the
+      page, and the `/mcq` push is asserted in a component test; **the arrival needs a browser**
 - [ ] `/login` shows a username field and no email field, and submits successfully, landing on
-      `/mcq` - same split: the fields and the push are proven, the arrival is not
+      `/mcq` - the served HTML carries `username` and `password` with no `type="email"`;
+      **the arrival needs a browser**
 - [x] A 401 renders as one form-level message reading exactly "Invalid credentials", not
       attached to either field - asserted on `textContent`, on `closest("[data-slot=field]")`
       being null, and on there being exactly one `role="alert"`
@@ -1473,33 +1547,48 @@ Marked in Phase 4 where a component test or the `preview` run is genuine evidenc
       component test, and `POST /api/auth/logout` returns 200 with no `Set-Cookie` on the
       runtime
 - [ ] All four pages render correctly in dark mode, which confirms theme tokens were used
-      rather than hard-coded colors - no hard-coded color was written, but this needs eyes
+      rather than hard-coded colors - a search of `src/app` and `src/components/auth` for hex
+      colors, `rgb(`, `hsl(`, and Tailwind palette literals returns nothing, so every color is
+      a theme token and `globals.css` defines them under `.dark`; **this still needs eyes**
 
 **Engineering**
 
-- [ ] `npm run test` passes, and every test can fail if its subject breaks
-- [ ] `npm run lint` is clean
-- [ ] `npm run build` succeeds
-- [ ] `npm run preview` serves the feature on the Workers runtime, hashing included
-- [ ] No test reaches a real database or network
-- [ ] `getCloudflareContext()` is called in exactly one file,
+- [x] `npm run test` passes, and every test can fail if its subject breaks - 12 files, 186
+      tests; ten mutations across the four implementation phases each failed the tests they
+      should have
+- [x] `npm run lint` is clean - exits 0 with no output
+- [x] `npm run build` succeeds - and its route table lists `ƒ` on exactly the three
+      `/api/auth/*` handlers, with no colocated test file mistaken for a route
+- [x] `npm run preview` serves the feature on the Workers runtime, hashing included - the full
+      walk is tabulated in the Phase 5 outcome
+- [x] No test reaches a real database or network - D1 is mocked everywhere, `fetch` is stubbed
+      in the component tests, and the only real thing any test touches is Web Crypto
+- [x] `getCloudflareContext()` is called in exactly one file,
       `src/lib/services/user-service.ts`
-- [ ] No SQL exists outside that file
-- [ ] The hash string format is written and parsed only in `src/lib/password.ts`
-- [ ] No `'use client'` file imports `user-service.ts`
-- [ ] The schema exists only in a migration, and the remote database was never touched
+- [x] No SQL exists outside that file - the migration holds the schema, and no other module
+      contains a statement
+- [x] The hash string format is written and parsed only in `src/lib/password.ts` - no other
+      production module contains the literal `pbkdf2-sha256`. Five test files do, which is the
+      point: they assert the contract from outside rather than reimplementing it
+- [x] No `'use client'` file imports `user-service.ts` - and none imports `@/lib/password` or
+      mentions `password_hash` either
+- [x] The schema exists only in a migration, and the remote database was never touched
 
-The Engineering block stays unticked until Phase 5 even though `npm run test` and `npm run lint`
-both pass today, because each one is a claim about the finished feature and every later phase can
-regress it. On the last item: `wrangler d1 create` necessarily created a remote database instance
-in Phase 1, but no migration has been applied to it and it holds no `users` table, which is what
-this criterion is about.
+All ten were marked in Phase 5, on the finished feature, each checked rather than assumed. The
+four structural ones were checked by search rather than by memory: `getCloudflareContext` and SQL
+appear in `user-service.ts` and its test and nowhere else; `pbkdf2-sha256` appears in no
+production module but `password.ts`; and `src/components` contains no reference to
+`user-service`, `password_hash`, or `@/lib/password`.
 
-As of the end of Phase 4 all ten hold, and each was checked rather than assumed: `preview` served
-the feature with real hashing, `getCloudflareContext()` appears in `user-service.ts` alone, the
-hash format is written and parsed only in `password.ts`, and a search of `src/components` for
-`user-service`, `password_hash`, and `@/lib/password` returns nothing. Phase 5 re-runs the lot on
-the finished feature and ticks them there.
+On the last item: `wrangler d1 create` necessarily created a remote database instance in Phase 1,
+but no migration has ever been applied to it and it holds no `users` table, which is what this
+criterion is about. Every `wrangler` command in all five phases used `--local`.
+
+**Three criteria across this document remain unticked, all for the same reason** - the agent has
+no browser. Two are the "submits successfully, landing on `/mcq`" halves for register and login,
+and one is dark mode on all four pages. Everything reachable without eyes was verified; those
+three are Kusuma's final check, and they are the only gap between this document and a fully
+ticked sprint.
 
 ---
 
@@ -1811,6 +1900,44 @@ symlinking `node_modules/esbuild` at wrangler's nested copy, which any `npm inst
 
 **Code Reference**: `package.json`
 
+### Resolved (Phase 5): `preview` fails with `EBUSY: resource busy or locked, rmdir '.open-next\assets'`
+
+**Problem**: The first `npm run preview` of Phase 5 died during `initOutputDir`, unable to delete
+`.open-next\assets` from the previous build. Killing `workerd` and deleting the directory both
+appeared to work and changed nothing - `workerd` came straight back and the directory reappeared.
+
+**Cause**: An orphaned process. Phase 4's preview was stopped by killing the `npm` wrapper, but
+the `wrangler dev` process underneath it survived, kept re-spawning `workerd`, and kept a handle
+on `.open-next`. `Get-CimInstance Win32_Process` made it obvious: two fresh `workerd` processes
+with the same parent PID, and that parent's command line was
+`node ... wrangler-dist/cli.js dev`.
+
+**Solution**: Kill the `wrangler dev` process itself, then its `workerd` children, then remove
+`.open-next`. The general lesson is worth more than the fix: on Windows, killing an npm script
+does not necessarily kill what it started, and a file lock that survives deletion means something
+is still running. Find the parent before deleting anything again. Note also that `wrangler d1
+execute --local` spawns its own short-lived `workerd`, so seeing one is not by itself a problem.
+
+**Code Reference**: none - process hygiene
+
+### Resolved (Phase 5): `AGENTS.md` described a project that no longer existed
+
+**Problem**: Not a failure, but the highest-cost stale documentation in the repo. `AGENTS.md`
+still said "This is an unmodified AISprints starter. No application features have been built yet"
+and "No database, authentication, testing framework, or AI SDK is installed yet".
+
+**Cause**: The file was written before Sprint 1 and nothing forced it to change. It is loaded
+into *every* agent conversation, so a wrong line there misleads every future session - an agent
+reading it would have concluded it needed to install Vitest and D1 from scratch.
+
+**Solution**: Rewrote the Project section to describe QuizMaker and to state the no-session
+boundary explicitly, corrected the Stack list to include D1, Vitest, and Zod, added `test` and
+`test:watch` to Commands, and added an **Auth invariants** section recording the four rules most
+likely to be "tidied up" by a future agent: one D1 module, one crypto module, never lowercase a
+username, and duplicates are 400 rather than 409.
+
+**Code Reference**: `AGENTS.md`
+
 ### Resolved (Phase 4): `npm run lint` reports thousands of errors after running `preview`
 
 **Problem**: Lint was clean, then `npm run preview` ran, and the next `npm run lint` reported
@@ -1990,10 +2117,13 @@ Read this before touching code in this sprint.
 ## Current Status
 
 **Last Updated**: August 23, 2026
-**Current Phase**: Phase 4 complete, awaiting Kusuma's review
-**Status**: PHASE 4 COMPLETED - real PBKDF2 hashing, four pages, three client components, and
-186 passing tests. The feature works end to end on the Workers runtime. Not yet committed.
+**Current Phase**: All five phases complete. Phase 5 awaiting Kusuma's final review.
+**Status**: SPRINT COMPLETE - register, login, logout, and the MCQ stub work end to end on the
+Workers runtime with real PBKDF2 hashing. 186 tests passing. Phases 1 to 4 are committed and
+pushed; Phase 5's documentation changes are not yet committed.
 **Branch**: `feature/register-login-logout`
+**Outstanding**: three acceptance criteria need a browser - see the end of Acceptance Criteria -
+and this Cursor chat still needs exporting for submission.
 
 **What exists now**, all of it exercised rather than inspected:
 
@@ -2002,12 +2132,13 @@ Read this before touching code in this sprint.
 | `vitest.config.ts` | jsdom, `globals: true`, React plugin, `vite-tsconfig-paths` |
 | `package.json` | seven dev packages and `zod`, plus `test` and `test:watch` scripts |
 | `eslint.config.mjs` | `.wrangler/**` added to `ignores` after `preview` generated bundles there |
+| `AGENTS.md` | Project section rewritten for QuizMaker, Stack corrected, Auth invariants added |
 | `src/lib/utils.test.ts` | 3 tests over `cn`, importing through `@/lib/utils` |
 | `wrangler.jsonc` | `d1_databases` block, binding `DB` |
 | `cloudflare-env.d.ts` | regenerated, declares `DB: D1Database` |
 | `migrations/0001_create_users_table.sql` | eight columns, both `UNIQUE` constraints, both named indexes |
 | `migrations/0001_create_users_table.test.ts` | 8 tests over the migration's declared shape |
-| Local D1 `aisprint-quizmaker-db` | migration applied; holds one row from the Phase 4 runtime check |
+| Local D1 `aisprint-quizmaker-db` | migration applied; holds three rows from the Phase 5 runtime walk |
 | `src/lib/services/user-service.ts` | seven exports, the only `getCloudflareContext()` caller and the only SQL in the codebase |
 | `src/lib/services/user-service.test.ts` | 38 tests against a fake D1, two of them mutation-checked |
 | `src/lib/validation/auth.ts` | `registerSchema`, `loginSchema`, `toFieldErrors` - now imported by the forms too |
@@ -2024,10 +2155,12 @@ Read this before touching code in this sprint.
 | `src/app/{login,register,mcq}/page.tsx` | Server Components; `/mcq` is the labelled static stub |
 
 **Verified by command output**: `npm run test` gives 12 files / 186 tests passing, `npm run lint`
-exits clean with no output, and `npx tsc --noEmit` exits 0. `npm run preview` serves the feature on
-workerd, and the ten requests in the Phase 4 outcome table all returned what this PRD says they
-should - including a `SELECT` confirming the stored `password_hash` is in the OD3 format and
-contains no plaintext. From Phase 1:
+exits clean with no output, `npx tsc --noEmit` exits 0, and `npm run build` succeeds with a route
+table listing `ƒ` on exactly the three `/api/auth/*` handlers. `npm run preview` serves the feature
+on workerd; the eleven requests in the Phase 5 outcome table all returned what this PRD says they
+should, and a `SELECT` over the three resulting rows found three distinct OD3-format hashes, no
+plaintext, and no missing timestamps. Two of those rows share an identical password and still hash
+differently. From Phase 1:
 `PRAGMA table_info(users)` returns the eight columns in schema order with `notnull = 1` on all but
 `id` and `dflt_value = "CURRENT_TIMESTAMP"` on both timestamps, `PRAGMA index_list(users)` returns
 five rows, and a throwaway insert proved SQLite generates the `id` and both timestamps unprompted
@@ -2037,9 +2170,11 @@ added a second round of real-database checks before writing any code: `INSERT`, 
 non-existent id come back with an empty `results` array, which is what `updateUser` and
 `deleteUser` rely on. Every probe row was deleted.
 
-The local `users` table now holds exactly one row, `KusumaBS`, left there by the Phase 4 runtime
-check. It is local-only state and is not committed. Delete it before Phase 5's end-to-end run if a
-clean table is wanted, or keep it as a known-good login.
+The local `users` table was emptied at the start of Phase 5 and now holds exactly three rows, all
+produced by the Phase 5 walk: `Kusuma` and `kusuma` with different passwords, and `SamePassword`
+sharing `Kusuma`'s password. It is local-only state and is not committed. Useful known-good
+logins for the browser check: `Kusuma` / `correct-horse-battery` and `kusuma` /
+`a-different-password`.
 
 **Every test file so far is known to be capable of failing**, not assumed to be. Phase 1 broke the
 migration SQL and watched the right two tests fail. Phase 2 did the same twice: spreading the row
@@ -2066,10 +2201,11 @@ superseded rather than quietly left wrong. And three of the five Troubleshooting
 written before Phase 4 never happened; they are marked "Not encountered" with the reason, because a
 predicted failure that did not occur is worth recording as much as one that did.
 
-**Not done, by instruction**: nothing from Phase 4's task list. What remains is Phase 5:
-dark-mode and browser verification of the four pages, the two "submits successfully, landing on
-`/mcq`" criteria that need a real browser, a second-account check that `Kusuma` and `kusuma` can
-both register, updating `AGENTS.md`, and exporting this chat.
+**Not done, and why**: three acceptance criteria, all requiring a browser the agent does not have.
+Two are the "submits successfully, landing on `/mcq`" halves for the register and login forms, and
+one is dark mode across the four pages. Everything that could be verified without eyes was, and
+the structural evidence for all three is recorded next to each criterion. `npm run deploy` was
+never run, per instruction. Nothing else from any phase's task list is outstanding.
 
 **Open Decisions**: all three approved by Kusuma on August 23, 2026. OD1 - the six-package
 Vitest install plus `vitest.config.ts` and the test scripts. OD2 - `zod` for route validation.
@@ -2114,8 +2250,22 @@ successful navigation and is re-enabled on every failure path; and `esbuild` was
 `devDependencies` with Kusuma's approval mid-phase to repair an upstream packaging gap. The last of
 these is the only one that changed `package.json`, and it was asked about before it was done.
 
-**Next Steps**: Phase 4 is complete and awaiting review. Nothing is committed. On approval, commit
-and push to `feature/register-login-logout` and stop; do not start Phase 5 without an explicit
-"go Phase 5". Phase 5 is verification and documentation: run the feature in a real browser
-including dark mode, tick the Engineering block and the four remaining criteria, update
-`AGENTS.md`, and export this Cursor chat.
+**Next Steps**, all Kusuma's:
+
+1. **Walk the flow in a browser.** `npm run preview` and open `http://127.0.0.1:8787`. Confirm
+   `/` lands on `/login`; registering a new account lands on `/mcq`; logging in as `Kusuma` with
+   `correct-horse-battery` lands on `/mcq`; a wrong password shows "Invalid credentials" above
+   the fields rather than on one of them; a duplicate username shows "Username already taken";
+   and Log out returns to `/login`. Every one of these is proven at the HTTP and component level
+   already - this confirms the assembled page.
+2. **Check all four pages in dark mode.** This is what proves theme tokens rather than
+   hard-coded colors.
+3. **Tick those three criteria** if they pass, or tell me what broke.
+4. **Export this Cursor chat.** Per `SETUP.md` Section 7: in this chat tab, open the dropdown
+   ("..." or gear icon at the top of the chat panel), choose **Export Chat**, and save the file
+   somewhere findable for submission. This is the submission artifact and the one deliverable the
+   agent cannot produce - do it before starting a new chat, since the sprint's reasoning lives
+   here.
+5. Review and commit the Phase 5 documentation changes.
+
+`npm run deploy` stays unrun.
