@@ -346,7 +346,7 @@ Plus one non-D1 helper exported from the same module:
 |---|---|
 | `toPublicUser` | Maps a `users` row to the API-safe shape. The single chokepoint that keeps `password_hash` out of every response. |
 
-**Three of the six functions have no caller in Sprint 1.** `findUserById`, `findUserByEmail`,
+**Four of the six functions have no caller in Sprint 1.** `findUserById`, `findUserByEmail`,
 `updateUser`, and `deleteUser` exist because the sprint defines the user service as a complete
 CRUD surface, not because a route needs them yet. This is a deliberate exception to the same
 reasoning that cut a `sessions` table from the migration, and it is worth being honest about
@@ -364,6 +364,20 @@ that actually causes trouble later.
   inconsistently between local and remote.
 - The camelCase-to-snake_case mapping lives here and nowhere else: `firstName` becomes
   `first_name` at this boundary, and `toPublicUser` maps back on the way out.
+
+**Two conventions settled in Phase 2 that this section did not originally specify:**
+
+- **Every write ends in `RETURNING`, and every statement is read with `all()`.** `createUser` and
+  `updateUser` use `RETURNING <all eight columns>` so the caller gets the row SQLite actually
+  stored - including the generated `id` and the timestamps - without a second query.  `deleteUser`
+  uses `RETURNING id` and reports `results.length > 0`, which is how it answers "did anything get
+  deleted" without depending on `meta.changes`. The upshot is that all six functions go through the
+  same `prepare().bind().all()` shape, so there is one thing to mock and no reason to reach for
+  `first()`. All three `RETURNING` forms were checked against the real local D1 before the code was
+  written, because mocked tests cannot tell you whether SQLite accepts the SQL.
+- **`updateUser` throws on an empty update.** Called with `{}` there is nothing to set, and the
+  alternative - emitting `SET updated_at = CURRENT_TIMESTAMP` alone - would silently touch a row's
+  timestamp on what is almost certainly a caller bug. It throws before preparing a statement.
 
 **No separate auth service layer, and no `src/lib/db.ts`.** An earlier draft split this into
 `users.ts` for SQL, `auth.ts` for business rules, and `db.ts` for the binding. This revision
@@ -750,7 +764,7 @@ apply` and `d1 execute` in Phase 1 was run with `--local`.
   would therefore be accepted. Nothing in Sprint 1 supplies an `id`, so this stays theoretical -
   but `createUser` must keep omitting the column rather than passing a null.
 
-### Phase 2: User Service - PLANNED
+### Phase 2: User Service - COMPLETED
 
 **Objective**: All six user-service functions work against a mocked D1, with no HTTP and no UI
 involved.
@@ -794,6 +808,33 @@ involved.
   `findUserById`, `findUserByUsername`, `findUserByEmail`, and `toPublicUser`
 - `src/lib/services/user-service.test.ts` covering all seven, including the four functions no
   route calls yet
+
+**Outcome** (2026-08-23):
+
+- Written test-first, and the red was confirmed rather than assumed: the first run of
+  `user-service.test.ts` failed with `Failed to resolve import "@/lib/services/user-service"`
+  because the module did not exist yet. Only then was it implemented.
+- `npm run test`: 3 files, 49 tests, all passing - 38 of them new. `npm run lint` clean, and
+  `npx tsc --noEmit` exits 0.
+- All seven exports exist. The four with no Sprint 1 caller are tested to the same standard as the
+  two that are used: `findUserById` and `findUserByEmail` each cover found and not-found,
+  `updateUser` has seven tests, `deleteUser` two.
+- `getCloudflareContext()` and the string `prepare(` appear in exactly one non-test file,
+  confirmed by search: `src/lib/services/user-service.ts`.
+- **`first()` is structurally impossible to use, not merely avoided.** The fake statement in the
+  test exposes only `bind` and `all`, so a service that called `first()` would fail with a
+  TypeError rather than pass quietly. That is worth more than a convention note.
+- Two mutation checks, because 49 green tests prove nothing on their own. Rewriting `toPublicUser`
+  to spread the row instead of naming fields failed 3 tests, including the one that asserts a
+  future column cannot leak. Adding `.toLowerCase()` to the username on insert failed 2 tests. Both
+  mutations were reverted and the suite re-verified.
+- `createUser` has no crypto dependency and no `password` field on its input type. A test passes an
+  extra `password` property anyway and asserts the statement still binds exactly five values, so a
+  plaintext password cannot reach SQL even if a future caller supplies one.
+- Duplicate detection matches the full `UNIQUE constraint failed: users.username` and
+  `...users.email` substrings confirmed in Phase 1. Three separate tests cover what it must *not*
+  swallow: a unique failure on another column, a `NOT NULL` failure, and an unrelated error are all
+  rethrown by identity.
 
 **Why the single-module boundary matters**: the testing skill states that
 `getCloudflareContext()` does not work under jsdom and must be mocked, and that D1 access
@@ -1212,15 +1253,15 @@ Phase 5; the Schema block was marked in Phase 1, since the phase produced the ev
 - [x] `PRAGMA index_list(users)` shows `idx_users_username` and `idx_users_email` alongside the
       two implicit unique indexes (five rows in total, including the primary-key index)
 
-**User service**
+**User service** - all verified in Phase 2, two of them mutation-checked
 
-- [ ] `src/lib/services/user-service.ts` exports `createUser`, `updateUser`, `deleteUser`,
+- [x] `src/lib/services/user-service.ts` exports `createUser`, `updateUser`, `deleteUser`,
       `findUserById`, `findUserByUsername`, `findUserByEmail`, and `toPublicUser`
-- [ ] All seven have tests, including the four with no caller in Sprint 1
-- [ ] Every query uses bound parameters with numbered placeholders, and no query uses `first()`
-- [ ] `updateUser` sets `updated_at` and no other function writes it
-- [ ] `toPublicUser` omits `password_hash` even when the row it is given contains one
-- [ ] `createUser` never receives or hashes a plaintext password
+- [x] All seven have tests, including the four with no caller in Sprint 1
+- [x] Every query uses bound parameters with numbered placeholders, and no query uses `first()`
+- [x] `updateUser` sets `updated_at` and no other function writes it
+- [x] `toPublicUser` omits `password_hash` even when the row it is given contains one
+- [x] `createUser` never receives or hashes a plaintext password
 
 **Registration**
 
@@ -1555,6 +1596,26 @@ criterion were corrected to say five. Read the `origin` field rather than counti
 
 **Code Reference**: `migrations/0001_create_users_table.sql`
 
+### Resolved (Phase 2): Vitest fails with "Timeout waiting for worker to respond"
+
+**Problem**: A single-file run reported
+`[vitest-pool]: Failed to start forks worker for test files ...` with
+`Caused by: [vitest-pool-runner]: Timeout waiting for worker to respond`, and `no tests` ran. It
+looks like a broken config, and it is easy to mistake for the test file being at fault.
+
+**Cause**: Neither. The worker did not start inside its 60-second window. Environment setup on this
+Windows machine has been erratic all sprint - the same jsdom setup has taken anywhere from 2 to 70
+seconds across otherwise identical runs - so a cold run can exceed the timeout.
+
+**Solution**: Rerun it. The immediate retry started in 19 seconds and produced the real failure,
+which was the expected `Failed to resolve import` for a module not yet written. Do not change
+`vitest.config.ts` or the test file in response to this error, and do not treat the run as
+meaningful evidence either way - it never reached the tests. If it becomes frequent rather than
+occasional, `test.testTimeout` and pool options are the knobs, and that is worth raising with
+Kusuma rather than tuning quietly.
+
+**Code Reference**: `vitest.config.ts`
+
 ### Noted (Phase 1): two harmless Vitest warnings on every run
 
 **Problem**: `npm run test` prints a warning that `vitest.config.ts` uses "ESM syntax in a file
@@ -1669,8 +1730,8 @@ Read this before touching code in this sprint.
 ## Current Status
 
 **Last Updated**: August 23, 2026
-**Current Phase**: Phase 1 approved and committed, awaiting "go Phase 2"
-**Status**: PHASE 1 COMPLETED AND APPROVED - test harness and local database verified, committed
+**Current Phase**: Phases 1 and 2 approved and committed, awaiting "go Phase 3"
+**Status**: PHASE 2 COMPLETED AND APPROVED - user service written test-first and green, committed
 and pushed to `feature/register-login-logout`
 **Branch**: `feature/register-login-logout`
 
@@ -1686,31 +1747,37 @@ and pushed to `feature/register-login-logout`
 | `migrations/0001_create_users_table.sql` | eight columns, both `UNIQUE` constraints, both named indexes |
 | `migrations/0001_create_users_table.test.ts` | 8 tests over the migration's declared shape |
 | Local D1 `aisprint-quizmaker-db` | migration applied, `users` table present and empty |
+| `src/lib/services/user-service.ts` | seven exports, the only `getCloudflareContext()` caller and the only SQL in the codebase |
+| `src/lib/services/user-service.test.ts` | 38 tests against a fake D1, two of them mutation-checked |
 
-**Verified by command output**: `npm run test` gives 2 files / 11 tests passing, `npm run lint`
-exits clean with no output. `PRAGMA table_info(users)` returns the eight columns in schema order
-with `notnull = 1` on all but `id` and `dflt_value = "CURRENT_TIMESTAMP"` on both timestamps.
-`PRAGMA index_list(users)` returns five rows. A throwaway insert proved SQLite generates the `id`
-and both timestamps unprompted, and that re-using a username or an email raises
-`UNIQUE constraint failed: users.<column>`; that row was then deleted. The migration test was
-mutation-checked - breaking the SQL made exactly the right two tests fail - so it is known to be
-capable of failing rather than assumed to be.
+**Verified by command output**: `npm run test` gives 3 files / 49 tests passing, `npm run lint`
+exits clean with no output, and `npx tsc --noEmit` exits 0. From Phase 1:
+`PRAGMA table_info(users)` returns the eight columns in schema order with `notnull = 1` on all but
+`id` and `dflt_value = "CURRENT_TIMESTAMP"` on both timestamps, `PRAGMA index_list(users)` returns
+five rows, and a throwaway insert proved SQLite generates the `id` and both timestamps unprompted
+while re-using a username or an email raises `UNIQUE constraint failed: users.<column>`. Phase 2
+added a second round of real-database checks before writing any code: `INSERT`, `UPDATE`, and
+`DELETE` with `RETURNING` all work on local D1, and both `UPDATE` and `DELETE` against a
+non-existent id come back with an empty `results` array, which is what `updateUser` and
+`deleteUser` rely on. Every probe row was deleted; the table is empty.
 
-**Deviation from the plan, needs Kusuma's eyes**: `@vitejs/plugin-react` is installed at `^5.2.0`
-rather than latest. v6 cannot be installed in this repo at all - it requires Babel 8 while
-`shadcn` requires Babel 7, and npm refuses the tree. OD1 approved the package list rather than
-specific versions, so this is within the letter of the decision, but it is a real narrowing worth
-knowing about. Full reasoning, and why `--legacy-peer-deps` was refused, is in Troubleshooting.
+**Both test files are known to be capable of failing**, not assumed to be. Phase 1 broke the
+migration SQL and watched the right two tests fail. Phase 2 did the same twice: spreading the row
+in `toPublicUser` failed 3 tests, and lowercasing the username on insert failed 2. All mutations
+were reverted and the suite re-verified.
 
-**Also worth knowing**: the PRD's predicted four indexes was wrong and is now corrected to five;
-the fifth is SQLite's primary-key index. `npm run test` prints two forward-compatibility warnings
-from Vite on every passing run, left in place deliberately. Nothing crashed - in particular
-`workerd` ran cleanly on Windows across every `wrangler` call, so the risk the plan flagged there
-did not materialise.
+**Also worth knowing**: the PRD's predicted four indexes was wrong and is corrected to five; the
+fifth is SQLite's primary-key index. The PRD also said "three of the six" service functions have no
+caller when it lists four - corrected. `npm run test` prints two forward-compatibility warnings
+from Vite on every passing run, left in place deliberately. One single-file run died with
+`Timeout waiting for worker to respond` and no tests; an immediate rerun was fine, and it is written
+up in Troubleshooting so it is not mistaken for a real failure next time. `workerd` has run cleanly
+on Windows across every `wrangler` call so far.
 
-**Not done, by instruction**: nothing is committed or pushed. No application code exists yet - no
-`src/lib/services/`, no `src/lib/password.ts`, no routes, no pages. `zod` is approved but not yet
-installed; it arrives in Phase 3 where it is first used.
+**Not done, by instruction**: No HTTP layer, no UI, and no crypto
+yet - no `src/lib/password.ts`, no `src/lib/validation/`, no routes, no pages. `zod` is approved but
+not installed; it arrives in Phase 3 where it is first used. Nothing above the service knows how a
+password is hashed, and the service still has no crypto dependency.
 
 **Open Decisions**: all three approved by Kusuma on August 23, 2026. OD1 - the six-package
 Vitest install plus `vitest.config.ts` and the test scripts. OD2 - `zod` for route validation.
@@ -1734,7 +1801,15 @@ OD3 - Web Crypto PBKDF2-SHA256 at 100,000 iterations with a 16-byte salt in a si
    item 11, and Notes for AI Agents item 19 exists to stop the change being reverted by reflex in
    Phase 2 or 3.
 
-**Next Steps**: Phase 1 is approved and its work is committed and pushed to
-`feature/register-login-logout`. Wait for an explicit "go Phase 2" before writing anything.
-Phase 2 then writes `src/lib/services/user-service.ts` test-first against a mocked D1, preserving
-username casing and matching duplicate errors on the constraint strings Phase 1 confirmed.
+**Decisions Phase 2 made that this PRD had left open**, both written up in the User Service
+section rather than only here: every write ends in `RETURNING` and every statement is read with
+`all()`, and `updateUser` throws rather than silently touching `updated_at` when given an empty
+update. Neither contradicts anything approved; both are the kind of choice worth recording before
+Phase 3 builds on it.
+
+**Next Steps**: Phase 2 is approved, committed, and pushed. Wait for an explicit "go Phase 3"
+before writing anything. Phase 3 installs `zod` and
+writes the three route handlers over this service - the register handler maps
+`{ ok: false, conflict }` to "Username already taken" or "Email already registered", and the login
+handler pairs `findUserByUsername` with a password module that does not exist until Phase 4, so it
+gets mocked.
