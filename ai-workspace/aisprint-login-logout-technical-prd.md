@@ -563,8 +563,9 @@ strings are worth trying.
 **Response:**
 
 - Success (200): the wrapped user object above
-- Error (400): `{ "error": "Validation failed", "fields": { ... } }` - a missing or non-string
-  field only
+- Error (400): `{ "error": "Validation failed", "fields": { ... } }` - a missing, non-string, or
+  empty field only. The two messages are `Username is required` and `Password is required`, added
+  in Phase 3 because the register validation table did not cover login's fields
 - Error (401): `{ "error": "Invalid credentials" }`
 - Error (500): `{ "error": "Could not sign in" }`
 
@@ -843,7 +844,7 @@ reconstructing D1's prepared-statement chain. Every later phase's tests depend o
 the case. If D1 access leaks into a route handler or a component, the test suite gets much
 worse very quickly.
 
-### Phase 3: Auth API Routes - PLANNED
+### Phase 3: Auth API Routes - COMPLETED
 
 **Objective**: The three endpoints exist, validate their input, call the user service, and
 return the documented status codes and exact message strings.
@@ -892,6 +893,52 @@ real password hashing arrives in Phase 4. That is intended. The seam is the `@/l
 module interface, which these tests mock: `hashPassword` returns a fixed fake string and
 `verifyPassword` returns a controlled boolean. Phase 4 replaces the mock with the real
 implementation, and these tests keep passing unchanged.
+
+**Outcome** (2026-08-23):
+
+- `npm run test`: 7 files, 121 tests, all passing - 74 new. `npm run lint` clean and
+  `npx tsc --noEmit` exits 0.
+- `npm run build` also run, to prove the throwing-stub decision below actually keeps the repo
+  shippable rather than just claiming to. It succeeds, and the route table lists exactly
+  `ƒ /api/auth/login`, `ƒ /api/auth/logout`, and `ƒ /api/auth/register` - so the colocated
+  `route.test.ts` files are ignored by the router, which is what colocation depends on.
+- `zod@4.4.3` is now a direct dependency. `npm install zod` printed "up to date" rather than
+  "added 1 package", because `shadcn` and `eslint-config-next` already pulled that exact version
+  into the tree; the install added the entry to `package.json` without fetching anything new.
+- Written in the order Kusuma asked for: validation tests, then the schemas, then route tests, then
+  the handlers.
+- **Two mutation checks on the guarantees that matter most.** Adding a `reason: "no such username"`
+  key to the not-found 401 failed 2 tests, including the byte-identical comparison. Changing the
+  duplicate response from 400 to 409 failed 3. Both reverted and re-verified.
+- Route tests mock only the D1-touching functions - `createUser` and `findUserByUsername` - and
+  keep the real `toPublicUser` via `importOriginal`. That matters: the assertions that no response
+  contains `password_hash` are exercising the actual mapper rather than a stub that could not leak
+  in the first place.
+- Route tests run with `// @vitest-environment node` rather than the project's jsdom default,
+  because `NextResponse` needs the platform `Request`/`Response`, which jsdom does not provide.
+  Environment setup for those three files takes about 1ms instead of seconds, which is a bonus
+  rather than the reason.
+
+**Four decisions this phase had to make**, none of which contradict anything approved:
+
+1. **`src/lib/password.ts` exists now, as a throwing stub.** The route handlers import
+   `hashPassword` and `verifyPassword`, so without the module `tsc` and `npm run build` would both
+   fail and the repo would not be in a shippable state at a phase boundary. Both functions throw
+   `"Password hashing is implemented in Phase 4"` rather than returning a placeholder, so an
+   unmocked caller fails loudly instead of writing something that is not a hash into `users`.
+   Phase 4 replaces the two bodies and nothing else.
+2. **Login's field messages are `"Username is required"` and `"Password is required"`.** The
+   validation table only covers register's five fields, so these two strings are new. They are now
+   part of the contract that Phase 4's login form renders.
+3. **One message per field covers every way that field can fail**, which is what the validation
+   table's single "Message on failure" column implies. It has one rough edge worth naming: a
+   51-character first name and a 129-character password report `"First name is required"` and
+   `"Must be at least 8 characters"` respectively, which read as the wrong complaint. The upper
+   bounds are defensive rather than something a real form hits, so the simpler contract won. Giving
+   the max-length cases their own strings is a two-line change if Kusuma prefers accuracy.
+4. **A body that is not JSON returns `{ "error": "Validation failed" }` with no `fields` key.**
+   There are no per-field errors to report when the body never parsed, and omitting `fields` is
+   what makes the form show it as one form-level message instead of rendering nothing.
 
 ### Phase 4: Auth UI and Password Hashing - PLANNED
 
@@ -1265,55 +1312,64 @@ Phase 5; the Schema block was marked in Phase 1, since the phase produced the ev
 
 **Registration**
 
+Phase 3 marks the criteria that are entirely about the HTTP contract, since route tests prove
+those outright. Anything that asserts what is *in the database*, or that depends on real hashing,
+stays open until Phase 5 runs the feature end to end.
+
 - [ ] A valid five-field submission creates a user and returns 201 with the wrapped `user`
       object carrying `id`, `firstName`, `lastName`, `username`, `email`, `createdAt`, and
-      `updatedAt`
+      `updatedAt` - the 201 and the shape are proven; "creates a user" needs a real insert
 - [ ] The created row has `first_name`, `last_name`, and `username` stored as sent apart from
       trimming, with the username's original casing intact, and `email` stored lowercased and
-      trimmed
+      trimmed - the values handed to `createUser` are proven correct; the stored row is not yet
+      inspected
 - [ ] Registering `Kusuma` and then `kusuma` creates two rows and returns 201 both times, since
       username uniqueness is case-sensitive
-- [ ] Registering a taken username returns 400 `{ "error": "Username already taken" }` and
+- [x] Registering a taken username returns 400 `{ "error": "Username already taken" }` and
       creates no second row
-- [ ] Registering a taken email returns 400 `{ "error": "Email already registered" }` and
+- [x] Registering a taken email returns 400 `{ "error": "Email already registered" }` and
       creates no second row
-- [ ] No registration response is ever a 409
-- [ ] A validation failure returns 400 `{ "error": "Validation failed", "fields": {...} }` where
+- [x] No registration response is ever a 409
+- [x] A validation failure returns 400 `{ "error": "Validation failed", "fields": {...} }` where
       every value in `fields` is a string, not an array
-- [ ] A password under 8 characters, a malformed email, a username outside 3 to 32 characters,
+- [x] A password under 8 characters, a malformed email, a username outside 3 to 32 characters,
       and any missing field each return 400 naming that field
-- [ ] A 32-character username is accepted and a 33-character one is rejected
-- [ ] A username containing punctuation or an `@` is accepted, since there is no character-set
+- [x] A 32-character username is accepted and a 33-character one is rejected
+- [x] A username containing punctuation or an `@` is accepted, since there is no character-set
       rule
-- [ ] `confirmPassword` is not part of the API contract and is ignored if sent
-- [ ] A 500 returns exactly `{ "error": "Could not create account" }`
-- [ ] `password_hash` in D1 never equals or contains the submitted password
+- [x] `confirmPassword` is not part of the API contract and is ignored if sent
+- [x] A 500 returns exactly `{ "error": "Could not create account" }`
+- [ ] `password_hash` in D1 never equals or contains the submitted password - hashing is still
+      mocked, so this waits for Phase 4
 - [ ] `password_hash` matches `pbkdf2-sha256$<digits>$<base64>$<base64>`
 - [ ] Two users with the same password have different `password_hash` values, proving the salt
       is per-user
-- [ ] No success response contains `passwordHash` or `password_hash`
-- [ ] No response body and no log line ever contains the plaintext password
+- [x] No success response contains `passwordHash` or `password_hash`
+- [x] No response body and no log line ever contains the plaintext password
 
 **Login**
 
-- [ ] A correct username and password return 200 with the same wrapped `user` shape as register
-- [ ] A correct **email** in the username field does not log anyone in, since email is not a
+- [x] A correct username and password return 200 with the same wrapped `user` shape as register
+- [x] A correct **email** in the username field does not log anyone in, since email is not a
       credential
-- [ ] A wrong password returns 401 `{ "error": "Invalid credentials" }`
-- [ ] An unknown username returns a 401 byte-identical to the wrong-password case
-- [ ] Neither 401 mentions a username, an email, or a password
+- [x] A wrong password returns 401 `{ "error": "Invalid credentials" }`
+- [x] An unknown username returns a 401 byte-identical to the wrong-password case
+- [x] Neither 401 mentions a username, an email, or a password
 - [ ] A username differing only in case from the registered one does **not** log in, and returns
-      the ordinary 401, because casing is preserved rather than normalised
+      the ordinary 401, because casing is preserved rather than normalised - the handler is proven
+      to pass casing through untouched, but the not-found result comes from D1, so this is a Phase
+      5 check
 - [ ] A username with leading or trailing whitespace still logs in, because both register and
-      login trim
-- [ ] A missing or malformed body returns 400 `Validation failed`
-- [ ] A username or password that register would have rejected returns 401, not 400
-- [ ] A 500 returns exactly `{ "error": "Could not sign in" }`
+      login trim - both trims are proven identical in the schema tests; logging in needs the real
+      stack
+- [x] A missing or malformed body returns 400 `Validation failed`
+- [x] A username or password that register would have rejected returns 401, not 400
+- [x] A 500 returns exactly `{ "error": "Could not sign in" }`
 
-**Logout**
+**Logout** - fully verified in Phase 3; this endpoint has no dependency on hashing or D1
 
-- [ ] `POST /api/auth/logout` returns 200 `{ "success": true }`
-- [ ] It succeeds whether or not anyone has ever logged in, since there is no state to check
+- [x] `POST /api/auth/logout` returns 200 `{ "success": true }`
+- [x] It succeeds whether or not anyone has ever logged in, since there is no state to check
 
 **UI**
 
@@ -1405,7 +1461,7 @@ where it is first used.
 | `@testing-library/user-event` | dev | OD1, approved | 1 | `^14.6.6` |
 | `jsdom` | dev | OD1, approved | 1 | `^30.0.1` |
 | `vite-tsconfig-paths` | dev | OD1, approved | 1 | `^6.1.1` |
-| `zod` | production | OD2, approved | 3 | not yet installed |
+| `zod` | production | OD2, approved | 3 | `^4.4.3` |
 
 **Nothing else.** Password hashing uses the Workers runtime's own `crypto.subtle`, so OD3 adds
 no package. `bcryptjs` was considered and rejected. Any dependency beyond these two lines is a
@@ -1706,10 +1762,12 @@ Read this before touching code in this sprint.
     endpoint section first.
 14. **`password_hash` is opaque above `src/lib/password.ts`.** Do not parse the
     `pbkdf2-sha256$...` string anywhere else, and do not add a `password_salt` column back.
-15. **The error strings are the contract.** "Validation failed", "Username already taken",
-    "Email already registered", "Invalid credentials", "Could not create account", "Could not
-    sign in". Tests assert them exactly, and the forms render them verbatim. Do not improve the
-    wording without changing this PRD first.
+15. **The error strings are the contract.** Top level: "Validation failed", "Username already
+    taken", "Email already registered", "Invalid credentials", "Could not create account", "Could
+    not sign in". Per field: "First name is required", "Last name is required", "Must be between 3
+    and 32 characters", "Must be a valid email address", "Must be at least 8 characters", and for
+    login "Username is required" and "Password is required". Tests assert them exactly, and the
+    forms render them verbatim. Do not improve the wording without changing this PRD first.
 16. **Every value in `fields` is a string, not an array.** The array wrapping that `FieldError`
     needs happens in the form component.
 17. **Responses go through `toPublicUser`.** Never return a row, never spread one, never delete
@@ -1730,9 +1788,9 @@ Read this before touching code in this sprint.
 ## Current Status
 
 **Last Updated**: August 23, 2026
-**Current Phase**: Phases 1 and 2 approved and committed, awaiting "go Phase 3"
-**Status**: PHASE 2 COMPLETED AND APPROVED - user service written test-first and green, committed
-and pushed to `feature/register-login-logout`
+**Current Phase**: Phases 1 to 3 approved and committed, awaiting "go Phase 4"
+**Status**: PHASE 3 COMPLETED AND APPROVED - validation, three route handlers, and 121 passing
+tests, committed and pushed to `feature/register-login-logout`
 **Branch**: `feature/register-login-logout`
 
 **What exists now**, all of it exercised rather than inspected:
@@ -1749,8 +1807,13 @@ and pushed to `feature/register-login-logout`
 | Local D1 `aisprint-quizmaker-db` | migration applied, `users` table present and empty |
 | `src/lib/services/user-service.ts` | seven exports, the only `getCloudflareContext()` caller and the only SQL in the codebase |
 | `src/lib/services/user-service.test.ts` | 38 tests against a fake D1, two of them mutation-checked |
+| `src/lib/validation/auth.ts` | `registerSchema`, `loginSchema`, `toFieldErrors` |
+| `src/lib/validation/auth.test.ts` | 37 tests, including every documented message and both casing rules |
+| `src/lib/password.ts` | interface only - both functions throw until Phase 4 fills them in |
+| `src/app/api/auth/{register,login,logout}/route.ts` | the three endpoints, each with a colocated test |
+| `.../route.test.ts` x3 | 46 tests over status codes and exact bodies, two of them mutation-checked |
 
-**Verified by command output**: `npm run test` gives 3 files / 49 tests passing, `npm run lint`
+**Verified by command output**: `npm run test` gives 7 files / 121 tests passing, `npm run lint`
 exits clean with no output, and `npx tsc --noEmit` exits 0. From Phase 1:
 `PRAGMA table_info(users)` returns the eight columns in schema order with `notnull = 1` on all but
 `id` and `dflt_value = "CURRENT_TIMESTAMP"` on both timestamps, `PRAGMA index_list(users)` returns
@@ -1761,10 +1824,12 @@ added a second round of real-database checks before writing any code: `INSERT`, 
 non-existent id come back with an empty `results` array, which is what `updateUser` and
 `deleteUser` rely on. Every probe row was deleted; the table is empty.
 
-**Both test files are known to be capable of failing**, not assumed to be. Phase 1 broke the
+**Every test file so far is known to be capable of failing**, not assumed to be. Phase 1 broke the
 migration SQL and watched the right two tests fail. Phase 2 did the same twice: spreading the row
-in `toPublicUser` failed 3 tests, and lowercasing the username on insert failed 2. All mutations
-were reverted and the suite re-verified.
+in `toPublicUser` failed 3 tests, and lowercasing the username on insert failed 2. Phase 3 did it
+twice more: adding a `reason` key to the not-found 401 failed 2 tests including the byte-identical
+comparison, and returning 409 for a duplicate failed 3. Every mutation was reverted and the suite
+re-verified.
 
 **Also worth knowing**: the PRD's predicted four indexes was wrong and is corrected to five; the
 fifth is SQLite's primary-key index. The PRD also said "three of the six" service functions have no
@@ -1774,10 +1839,12 @@ from Vite on every passing run, left in place deliberately. One single-file run 
 up in Troubleshooting so it is not mistaken for a real failure next time. `workerd` has run cleanly
 on Windows across every `wrangler` call so far.
 
-**Not done, by instruction**: No HTTP layer, no UI, and no crypto
-yet - no `src/lib/password.ts`, no `src/lib/validation/`, no routes, no pages. `zod` is approved but
-not installed; it arrives in Phase 3 where it is first used. Nothing above the service knows how a
-password is hashed, and the service still has no crypto dependency.
+**Not done, by instruction**: There is still no UI - no pages, no
+forms, and `src/app/page.tsx` is still the Next.js starter. **Real password hashing does not exist
+yet**, so the three endpoints are not usable end to end: `src/lib/password.ts` declares
+`hashPassword` and `verifyPassword` but both throw, and every test that needs them mocks the
+module. That is the intended Phase 3 boundary, not an oversight. The user service still has no
+crypto dependency and never sees a plaintext password.
 
 **Open Decisions**: all three approved by Kusuma on August 23, 2026. OD1 - the six-package
 Vitest install plus `vitest.config.ts` and the test scripts. OD2 - `zod` for route validation.
@@ -1804,12 +1871,18 @@ OD3 - Web Crypto PBKDF2-SHA256 at 100,000 iterations with a 16-byte salt in a si
 **Decisions Phase 2 made that this PRD had left open**, both written up in the User Service
 section rather than only here: every write ends in `RETURNING` and every statement is read with
 `all()`, and `updateUser` throws rather than silently touching `updated_at` when given an empty
-update. Neither contradicts anything approved; both are the kind of choice worth recording before
-Phase 3 builds on it.
+update.
 
-**Next Steps**: Phase 2 is approved, committed, and pushed. Wait for an explicit "go Phase 3"
-before writing anything. Phase 3 installs `zod` and
-writes the three route handlers over this service - the register handler maps
-`{ ok: false, conflict }` to "Username already taken" or "Email already registered", and the login
-handler pairs `findUserByUsername` with a password module that does not exist until Phase 4, so it
-gets mocked.
+**Decisions Phase 3 made**, all four written up in the Phase 3 section and **all four approved by
+Kusuma at Phase 3 review (2026-08-23)**: `src/lib/password.ts` exists as a throwing stub and stays
+that way until Phase 4 replaces the two bodies; login's field messages are "Username is required"
+and "Password is required" and stay as they are; one message per field covers every failure mode of
+that field, max-length edge case included, so the two long-input messages that read as the wrong
+complaint are accepted rather than something to fix; and a non-JSON body returns
+`{ "error": "Validation failed" }` with no `fields` key. None of these are open questions any more.
+
+**Next Steps**: Phase 3 is approved, committed, and pushed. Wait for an explicit "go Phase 4"
+before writing anything. Phase 4 replaces the two `password.ts` bodies with Web Crypto
+PBKDF2-SHA256 per OD3 - the existing route tests should keep passing completely unchanged, which is
+the real test of whether this seam was drawn in the right place - and then builds the four pages
+and two client forms.
