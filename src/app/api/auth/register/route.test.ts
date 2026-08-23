@@ -1,29 +1,25 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { FAKE_HASH } = vi.hoisted(() => ({
-  FAKE_HASH: "pbkdf2-sha256$100000$ZmFrZXNhbHQ=$ZmFrZWtleQ==",
-}));
-
 // Only the D1-touching function is replaced. toPublicUser stays real, so the assertions
-// below about what does and does not reach the response are testing the actual mapper.
+// below about what does and does not reach the response are testing the actual mapper, and
+// @/lib/password is not mocked at all - Phase 4 hashing runs for real in these tests.
 vi.mock("@/lib/services/user-service", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("@/lib/services/user-service")>();
   return { ...actual, createUser: vi.fn() };
 });
 
-vi.mock("@/lib/password", () => ({
-  hashPassword: vi.fn(async () => FAKE_HASH),
-  verifyPassword: vi.fn(async () => true),
-}));
-
-import { hashPassword } from "@/lib/password";
+import { hashPassword, verifyPassword } from "@/lib/password";
 import { createUser, type UserRow } from "@/lib/services/user-service";
 
 import { POST } from "./route";
 
 const PLAINTEXT = "correct-horse-battery";
+const HASH_FORMAT = /^pbkdf2-sha256\$100000\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$/;
+
+// A real hash, produced by the module under test rather than a stand-in string.
+const REAL_HASH = await hashPassword(PLAINTEXT);
 
 const validBody = {
   firstName: "Kusuma",
@@ -39,7 +35,7 @@ const createdRow: UserRow = {
   last_name: "Reddy",
   username: "Kusuma",
   email: "kusuma@example.com",
-  password_hash: FAKE_HASH,
+  password_hash: REAL_HASH,
   created_at: "2026-08-23 12:04:11",
   updated_at: "2026-08-23 12:04:11",
 };
@@ -52,10 +48,14 @@ function postRequest(body: unknown) {
   });
 }
 
+function passwordHashSentToService(): string {
+  const [call] = vi.mocked(createUser).mock.calls;
+  return call[0].passwordHash;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(console, "error").mockImplementation(() => {});
-  vi.mocked(hashPassword).mockResolvedValue(FAKE_HASH);
   vi.mocked(createUser).mockResolvedValue({ ok: true, user: createdRow });
 });
 
@@ -77,17 +77,38 @@ describe("POST /api/auth/register", () => {
     });
   });
 
-  it("hashes the password before the service ever sees it", async () => {
+  it("hands the service a real PBKDF2 hash, not the plaintext", async () => {
     await POST(postRequest(validBody));
 
-    expect(hashPassword).toHaveBeenCalledWith(PLAINTEXT);
     expect(createUser).toHaveBeenCalledWith({
       firstName: "Kusuma",
       lastName: "Reddy",
       username: "Kusuma",
       email: "kusuma@example.com",
-      passwordHash: FAKE_HASH,
+      passwordHash: expect.stringMatching(HASH_FORMAT),
     });
+  });
+
+  it("hands the service a hash the submitted password verifies against", async () => {
+    await POST(postRequest(validBody));
+
+    const stored = passwordHashSentToService();
+    await expect(verifyPassword(PLAINTEXT, stored)).resolves.toBe(true);
+    await expect(verifyPassword("not-the-password", stored)).resolves.toBe(
+      false,
+    );
+  });
+
+  it("salts per registration, so two identical passwords are stored differently", async () => {
+    await POST(postRequest(validBody));
+    const first = passwordHashSentToService();
+
+    vi.clearAllMocks();
+    vi.mocked(createUser).mockResolvedValue({ ok: true, user: createdRow });
+    await POST(postRequest({ ...validBody, username: "Someone" }));
+    const second = passwordHashSentToService();
+
+    expect(first).not.toBe(second);
   });
 
   it("never hands the plaintext password to the service", async () => {
@@ -121,8 +142,9 @@ describe("POST /api/auth/register", () => {
 
     expect(body).not.toContain("password_hash");
     expect(body).not.toContain("passwordHash");
-    expect(body).not.toContain(FAKE_HASH);
+    expect(body).not.toContain(REAL_HASH);
     expect(body).not.toContain(PLAINTEXT);
+    expect(body).not.toContain("pbkdf2");
   });
 
   it("returns 400 Validation failed with one string per bad field", async () => {
@@ -144,7 +166,6 @@ describe("POST /api/auth/register", () => {
     await POST(postRequest({ ...validBody, username: "ku" }));
 
     expect(createUser).not.toHaveBeenCalled();
-    expect(hashPassword).not.toHaveBeenCalled();
   });
 
   it("returns 400 Username already taken for a username collision", async () => {
@@ -197,17 +218,6 @@ describe("POST /api/auth/register", () => {
     vi.mocked(createUser).mockRejectedValue(
       new Error("D1_ERROR: database is locked"),
     );
-
-    const response = await POST(postRequest(validBody));
-
-    expect(response.status).toBe(500);
-    await expect(response.json()).resolves.toEqual({
-      error: "Could not create account",
-    });
-  });
-
-  it("returns 500 when hashing fails, without leaking why", async () => {
-    vi.mocked(hashPassword).mockRejectedValue(new Error("crypto unavailable"));
 
     const response = await POST(postRequest(validBody));
 

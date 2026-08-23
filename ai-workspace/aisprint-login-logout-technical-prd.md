@@ -894,6 +894,10 @@ module interface, which these tests mock: `hashPassword` returns a fixed fake st
 `verifyPassword` returns a controlled boolean. Phase 4 replaces the mock with the real
 implementation, and these tests keep passing unchanged.
 
+**Superseded by Phase 4**: "unchanged" turned out to be the wrong goal. Kusuma asked for the
+mock to be dropped rather than satisfied, so these route tests now run against real PBKDF2. Two
+of them changed shape as a result and one was removed; Phase 4's outcome records which and why.
+
 **Outcome** (2026-08-23):
 
 - `npm run test`: 7 files, 121 tests, all passing - 74 new. `npm run lint` clean and
@@ -940,7 +944,7 @@ implementation, and these tests keep passing unchanged.
    There are no per-field errors to report when the body never parsed, and omitting `fields` is
    what makes the form show it as one form-level message instead of rendering nothing.
 
-### Phase 4: Auth UI and Password Hashing - PLANNED
+### Phase 4: Auth UI and Password Hashing - COMPLETED
 
 **Objective**: Passwords are really hashed, and the feature is usable in a browser.
 
@@ -999,6 +1003,74 @@ implementation, and these tests keep passing unchanged.
 `/mcq` stub are therefore verified by hand in Phase 5; only the two client form components are
 component-tested.
 
+**Outcome** (2026-08-23):
+
+- `npm run test`: 12 files, 186 tests, all passing - 65 new. `npm run lint` clean and
+  `npx tsc --noEmit` exits 0.
+- Written in the order Kusuma asked for: `password.test.ts`, then the real implementation, then
+  the route-test mock removal, then the forms and their tests, then the pages.
+- **The stored hash was read back out of D1 on the Workers runtime**, which is the one claim this
+  phase existed to make. A registration through `npm run preview` produced
+  `pbkdf2-sha256$100000$...`, 90 characters long - exactly 13 + 6 + 24 + 44 plus three
+  separators, so the salt really is 16 bytes and the key really is 32.
+- **Three mutation checks.** Deriving the comparison key from the `ITERATIONS` constant instead
+  of the count stored in the hash failed 1 test - the one that exists to protect future
+  re-tuning. Replacing the random salt with a fixed one failed 1. Pointing register's success
+  redirect at `/login` and flattening `fields` into a form-level message failed 2. All reverted
+  and re-verified.
+- `equalInConstantTime` accumulates `|=` across every byte and only compares the total at the
+  end. As task 5 says, no test asserts timing; the tests only assert the true or false result,
+  and this line is the code-review item.
+
+**What was verified on the Workers runtime**, via `npm run preview` on `127.0.0.1:8787`:
+
+| Request | Result |
+|---|---|
+| `POST /register`, new user | 201, wrapped user, `username` `KusumaBS` and `email` `kusuma@example.com` from a submitted `Kusuma@Example.COM` |
+| `POST /register`, same username and email | 400 `Email already registered` |
+| `POST /register`, same username, new email | 400 `Username already taken` |
+| `POST /login`, correct password | 200, same wrapped shape - real PBKDF2 verification |
+| `POST /login`, `kusumabs` | 401 `Invalid credentials` - casing is genuinely load-bearing |
+| `POST /login`, wrong password | 401 `Invalid credentials` |
+| `POST /logout` | 200 `{"success":true}`, no `Set-Cookie` |
+| `GET /` | 307 to `/login` |
+| `GET /login`, `/register`, `/mcq` | 200 each |
+| `SELECT` on `users` | 1 row, 0 rows containing the plaintext, 1 row in the OD3 format |
+
+The duplicate ordering is worth noting: a body colliding on *both* username and email came back
+`Email already registered`, because SQLite reports whichever unique index it checks first. Both
+messages are correct for that request and neither is guaranteed. A single-field collision is
+deterministic, which is the case the form actually produces.
+
+**Five decisions this phase had to make**:
+
+1. **The route tests dropped the `@/lib/password` mock entirely**, as instructed, which makes
+   them integration tests over real crypto. Two of them changed as a consequence, and the
+   change is an improvement in both cases. Login's "verification throws" test now feeds a
+   genuinely corrupt `password_hash` instead of a rejecting mock, so it proves a data problem
+   surfaces as 500 rather than as a wrong-password 401. Register's "hashing fails" test was
+   **removed**: with the real module there is no way to make `hashPassword` throw for an input
+   Zod already accepted, and the same `catch` block is still covered by the service-throws test.
+   Login's "does not verify when there is no user" test was rewritten to prove the same thing
+   behaviourally - with no row there is no hash to parse, so a route that reached for one anyway
+   would 500, and the 401 is the evidence it stopped first.
+2. **The forms validate with the same Zod schemas the routes use**, imported directly rather
+   than reimplemented. The PRD asked for client-visible validation matching the Zod rules, and
+   sharing the schema is the only version of that which cannot drift. It costs nothing: the
+   schemas import no D1 and no Node built-ins.
+3. **`src/lib/auth-client.ts` holds the shared `postAuth` helper.** Both forms need the same
+   rule for turning a response into UI state - `fields` goes on the inputs, a bare `error` goes
+   form-level - and having it in one place is what stops the two forms from disagreeing. It also
+   keeps each form's submit handler short enough to read in one go.
+4. **The submit button stays disabled after a *successful* submit**, through the navigation,
+   rather than being re-enabled in a `finally`. A re-enabled button on a page that is about to
+   be replaced is a second registration waiting to happen. It is re-enabled on every failure
+   path, and there is a test for each.
+5. **`esbuild` was added to `devDependencies`, with Kusuma's approval mid-phase.**
+   `@opennextjs/cloudflare` imports it in its CLI but declares it only in its own
+   `devDependencies`, so nothing hoists it and `npm run preview` cannot start. See
+   Troubleshooting. It is a build-time tool and is never bundled into the Worker.
+
 ### Phase 5: Verification and Documentation - PLANNED
 
 **Objective**: The whole feature is verified on the real runtime, the repo's documentation
@@ -1054,7 +1126,9 @@ matches what was built, and the sprint is submitted.
 | `src/lib/password.ts` | `hashPassword`, `verifyPassword`. The only place crypto happens and the only place the hash string format is written or parsed. |
 | `src/lib/validation/auth.ts` | `registerSchema`, `loginSchema`. |
 | `src/app/api/auth/{register,login,logout}/route.ts` | HTTP shells: validate, call `user-service`, shape with `toPublicUser`. Register and login also call the password module. |
-| `src/components/auth/{register-form,login-form}.tsx` | Client components. The only `'use client'` files in the feature. |
+| `src/components/auth/{register-form,login-form}.tsx` | Client components. Validate with the same Zod schemas the routes use, so there is no second copy of the rules. |
+| `src/components/auth/logout-button.tsx` | Client component. POSTs to `/api/auth/logout`, then redirects to `/login` whether or not the call succeeded. |
+| `src/lib/auth-client.ts` | `postAuth`. The one place that decides whether an error response belongs on an input or above the form, shared by both forms. |
 | `src/app/page.tsx` | Redirects to `/login`. Replaces the starter page. |
 | `src/app/{register,login,mcq}/page.tsx` | Server Components. |
 | `vitest.config.ts` | Test harness. `vite-tsconfig-paths` is what makes `@/` resolve. |
@@ -1064,8 +1138,9 @@ matches what was built, and the sprint is submitted.
 ```mermaid
 graph TD
   Root["/ - redirect"] --> Pages
-  Pages["Server Components: /register /login /mcq"] --> Forms["Client components: register-form, login-form"]
-  Forms -->|"fetch POST"| Routes["Route handlers: src/app/api/auth/*"]
+  Pages["Server Components: /register /login /mcq"] --> Forms["Client components: register-form, login-form, logout-button"]
+  Forms --> Client["src/lib/auth-client.ts - postAuth"]
+  Client -->|"fetch POST"| Routes["Route handlers: src/app/api/auth/*"]
   Routes --> Validation["Zod schemas: src/lib/validation/auth.ts"]
   Routes --> Password["src/lib/password.ts - hash and verify"]
   Routes --> UserSvc["src/lib/services/user-service.ts - six functions, toPublicUser, only getCloudflareContext caller"]
@@ -1313,16 +1388,17 @@ Phase 5; the Schema block was marked in Phase 1, since the phase produced the ev
 **Registration**
 
 Phase 3 marks the criteria that are entirely about the HTTP contract, since route tests prove
-those outright. Anything that asserts what is *in the database*, or that depends on real hashing,
-stays open until Phase 5 runs the feature end to end.
+those outright. Phase 4 marks the ones that needed a real insert or real hashing, using the
+`npm run preview` run recorded in its outcome. Anything still open needs a browser or a second
+account, and belongs to Phase 5.
 
-- [ ] A valid five-field submission creates a user and returns 201 with the wrapped `user`
+- [x] A valid five-field submission creates a user and returns 201 with the wrapped `user`
       object carrying `id`, `firstName`, `lastName`, `username`, `email`, `createdAt`, and
-      `updatedAt` - the 201 and the shape are proven; "creates a user" needs a real insert
-- [ ] The created row has `first_name`, `last_name`, and `username` stored as sent apart from
+      `updatedAt`
+- [x] The created row has `first_name`, `last_name`, and `username` stored as sent apart from
       trimming, with the username's original casing intact, and `email` stored lowercased and
-      trimmed - the values handed to `createUser` are proven correct; the stored row is not yet
-      inspected
+      trimmed - the 201 body is built from the `INSERT ... RETURNING` row, so it *is* the stored
+      row, and a follow-up `SELECT` confirmed `KusumaBS` and `kusuma@example.com`
 - [ ] Registering `Kusuma` and then `kusuma` creates two rows and returns 201 both times, since
       username uniqueness is case-sensitive
 - [x] Registering a taken username returns 400 `{ "error": "Username already taken" }` and
@@ -1339,11 +1415,13 @@ stays open until Phase 5 runs the feature end to end.
       rule
 - [x] `confirmPassword` is not part of the API contract and is ignored if sent
 - [x] A 500 returns exactly `{ "error": "Could not create account" }`
-- [ ] `password_hash` in D1 never equals or contains the submitted password - hashing is still
-      mocked, so this waits for Phase 4
-- [ ] `password_hash` matches `pbkdf2-sha256$<digits>$<base64>$<base64>`
-- [ ] Two users with the same password have different `password_hash` values, proving the salt
-      is per-user
+- [x] `password_hash` in D1 never equals or contains the submitted password - checked with a
+      `LIKE '%<plaintext>%'` count over the table, which returned 0
+- [x] `password_hash` matches `pbkdf2-sha256$<digits>$<base64>$<base64>` - confirmed in D1 by
+      prefix and by a length of exactly 90 characters
+- [x] Two users with the same password have different `password_hash` values, proving the salt
+      is per-user - proven at the route level by submitting the same password twice and
+      comparing what reached `createUser`, and again in the unit tests
 - [x] No success response contains `passwordHash` or `password_hash`
 - [x] No response body and no log line ever contains the plaintext password
 
@@ -1355,10 +1433,9 @@ stays open until Phase 5 runs the feature end to end.
 - [x] A wrong password returns 401 `{ "error": "Invalid credentials" }`
 - [x] An unknown username returns a 401 byte-identical to the wrong-password case
 - [x] Neither 401 mentions a username, an email, or a password
-- [ ] A username differing only in case from the registered one does **not** log in, and returns
-      the ordinary 401, because casing is preserved rather than normalised - the handler is proven
-      to pass casing through untouched, but the not-found result comes from D1, so this is a Phase
-      5 check
+- [x] A username differing only in case from the registered one does **not** log in, and returns
+      the ordinary 401, because casing is preserved rather than normalised - `kusumabs` against a
+      stored `KusumaBS` returned 401 on the Workers runtime, with the real D1 lookup
 - [ ] A username with leading or trailing whitespace still logs in, because both register and
       login trim - both trims are proven identical in the schema tests; logging in needs the real
       stack
@@ -1373,20 +1450,30 @@ stays open until Phase 5 runs the feature end to end.
 
 **UI**
 
-- [ ] `/` redirects to `/login`
+Marked in Phase 4 where a component test or the `preview` run is genuine evidence. The two
+"submits successfully" criteria stay open deliberately: a mocked `useRouter` proves the form
+*asks* for `/mcq`, and only a browser proves it arrives.
+
+- [x] `/` redirects to `/login` - 307 with `Location: /login` on the Workers runtime
 - [ ] `/register` shows exactly five fields, with no confirm-password input, and submits
-      successfully, landing on `/mcq`
+      successfully, landing on `/mcq` - the five fields, the absent confirm input, and the
+      `/mcq` push are all proven; the arrival is a Phase 5 browser check
 - [ ] `/login` shows a username field and no email field, and submits successfully, landing on
-      `/mcq`
-- [ ] A 401 renders as one form-level message reading exactly "Invalid credentials", not
-      attached to either field
-- [ ] "Username already taken" and "Email already registered" render as form-level messages
-- [ ] A `fields` string renders on its matching input, wrapped as `[{ message }]` for
-      `FieldError`
-- [ ] `/mcq` renders the placeholder questions and is visibly labelled a stub
-- [ ] The logout button POSTs and lands on `/login`
+      `/mcq` - same split: the fields and the push are proven, the arrival is not
+- [x] A 401 renders as one form-level message reading exactly "Invalid credentials", not
+      attached to either field - asserted on `textContent`, on `closest("[data-slot=field]")`
+      being null, and on there being exactly one `role="alert"`
+- [x] "Username already taken" and "Email already registered" render as form-level messages
+- [x] A `fields` string renders on its matching input, wrapped as `[{ message }]` for
+      `FieldError` - the test asserts the message node is *inside* the email field's container,
+      not merely present on the page
+- [x] `/mcq` renders the placeholder questions and is visibly labelled a stub - the served HTML
+      contains "placeholder" and "no session management"
+- [x] The logout button POSTs and lands on `/login` - the POST and the redirect are proven in a
+      component test, and `POST /api/auth/logout` returns 200 with no `Set-Cookie` on the
+      runtime
 - [ ] All four pages render correctly in dark mode, which confirms theme tokens were used
-      rather than hard-coded colors
+      rather than hard-coded colors - no hard-coded color was written, but this needs eyes
 
 **Engineering**
 
@@ -1407,6 +1494,12 @@ both pass today, because each one is a claim about the finished feature and ever
 regress it. On the last item: `wrangler d1 create` necessarily created a remote database instance
 in Phase 1, but no migration has been applied to it and it holds no `users` table, which is what
 this criterion is about.
+
+As of the end of Phase 4 all ten hold, and each was checked rather than assumed: `preview` served
+the feature with real hashing, `getCloudflareContext()` appears in `user-service.ts` alone, the
+hash format is written and parsed only in `password.ts`, and a search of `src/components` for
+`user-service`, `password_hash`, and `@/lib/password` returns nothing. Phase 5 re-runs the lot on
+the finished feature and ticks them there.
 
 ---
 
@@ -1450,8 +1543,7 @@ product outcomes. Product metrics arrive when quizzes do.
 
 ### New Packages
 
-All approved. The OD1 six are installed as of Phase 1; `zod` is not, and arrives in Phase 3
-where it is first used.
+All approved and all installed as of Phase 4.
 
 | Package | Type | Decision | Phase | Installed version |
 |---|---|---|---|---|
@@ -1462,10 +1554,19 @@ where it is first used.
 | `jsdom` | dev | OD1, approved | 1 | `^30.0.1` |
 | `vite-tsconfig-paths` | dev | OD1, approved | 1 | `^6.1.1` |
 | `zod` | production | OD2, approved | 3 | `^4.4.3` |
+| `esbuild` | dev | Approved in Phase 4, unplanned | 4 | `^0.27.0` |
 
 **Nothing else.** Password hashing uses the Workers runtime's own `crypto.subtle`, so OD3 adds
-no package. `bcryptjs` was considered and rejected. Any dependency beyond these two lines is a
+no package. `bcryptjs` was considered and rejected. Any dependency beyond this table is a
 new decision and needs Kusuma's yes first, per `AGENTS.md`.
+
+`esbuild` is the one addition this PRD did not foresee, and it is worth being honest about why it
+is here. It is not a choice; it repairs an upstream packaging gap. `@opennextjs/cloudflare` - an
+existing, approved dependency - imports `esbuild` in its CLI but declares it only in its own
+`devDependencies`, so `npm run preview` cannot start without a copy in the root `node_modules`.
+It is a build-time tool, it never reaches the Worker bundle, and it adds nothing to the runtime
+cost. Kusuma approved it mid-phase rather than after the fact. See Troubleshooting for the
+diagnosis, including why `npm ls esbuild` made it look present when it was not.
 
 ### Environment Variables
 
@@ -1689,6 +1790,79 @@ cleanup to do silently. Neither affects test results.
 
 **Code Reference**: `vitest.config.ts`
 
+### Resolved (Phase 4): `npm run preview` dies with `ERR_MODULE_NOT_FOUND` for `esbuild`
+
+**Problem**: The very first `npm run preview` failed before building anything:
+`Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'esbuild' imported from
+node_modules\@opennextjs\cloudflare\dist\cli\build\bundle-server.js`.
+
+**Cause**: An upstream packaging gap, not anything this project did. `@opennextjs/cloudflare`
+imports `esbuild` from its CLI at runtime but lists it only in its own `devDependencies`, so npm
+has no reason to hoist it. `npm ls esbuild` looked reassuring - it showed copies under
+`@opennextjs/aws` and `wrangler` - but the two versions conflict (0.25.4 and 0.28.1), so npm
+nested both and hoisted neither. `node_modules/esbuild` did not exist, which is the only path the
+adapter can resolve. Worth remembering that `npm ls` shows the dependency *graph*, and a missing
+module is a question about the directory *layout*.
+
+**Solution**: `npm install -D esbuild@^0.27.0`, matching the version the adapter expects, after
+asking Kusuma - a `package.json` change is exactly what `AGENTS.md` says to ask about. It is a
+build-time tool and is never bundled into the Worker. The alternative considered and rejected was
+symlinking `node_modules/esbuild` at wrangler's nested copy, which any `npm install` would undo.
+
+**Code Reference**: `package.json`
+
+### Resolved (Phase 4): `npm run lint` reports thousands of errors after running `preview`
+
+**Problem**: Lint was clean, then `npm run preview` ran, and the next `npm run lint` reported
+6,272 problems across two files at line numbers in the tens of thousands. It also took over four
+minutes instead of twelve seconds.
+
+**Cause**: `preview` leaves generated bundles in `.wrangler/tmp/`, and ESLint 9's flat config does
+not read `.gitignore`. `eslint.config.mjs` already ignored `.next/**` and `.open-next/**`, so this
+had simply never come up - nothing had written to `.wrangler/` before.
+
+**Solution**: Added `".wrangler/**"` to the `ignores` array beside the other build outputs. Note
+the shape of this failure: the errors were real ESLint errors in real files, so the only clue that
+they were not *ours* was the line numbers. Check the file paths in the lint output before
+believing a sudden explosion of errors.
+
+**Code Reference**: `eslint.config.mjs`
+
+### Resolved (Phase 4): `tsc` rejects a `Uint8Array` passed to `crypto.subtle`
+
+**Problem**: Tests passed, then `npx tsc --noEmit` failed:
+`Type 'Uint8Array<ArrayBufferLike>' is not assignable to type 'BufferSource'` on the `salt`
+passed to `deriveBits`, complaining about `SharedArrayBuffer`.
+
+**Cause**: Modern TypeScript makes `Uint8Array` generic over its backing buffer. A plain
+`Uint8Array` might sit on a `SharedArrayBuffer`, which `crypto.subtle` will not accept, so the
+annotation has to narrow it.
+
+**Solution**: Annotate as `Uint8Array<ArrayBuffer>` on `fromBase64`'s return type, `deriveKey`'s
+`salt` parameter, and the local in `verifyPassword`. No runtime change - `new Uint8Array(n)` and
+`crypto.getRandomValues()` already produce exactly that. A reminder that green tests are not a
+substitute for `tsc`, since Vitest transpiles without typechecking.
+
+**Code Reference**: `src/lib/password.ts`
+
+### Resolved (Phase 4): every `curl` request to `preview` returned `Validation failed`
+
+**Problem**: Three different register bodies - one valid, one duplicate, one deliberately invalid -
+all came back 400 `{"error":"Validation failed"}` with no `fields` key. That is the
+malformed-JSON branch, so the server was reporting correctly and the requests were the problem.
+
+**Cause**: PowerShell mangles the double quotes in a JSON string before `curl.exe` sees it. Two
+separate traps followed: `Invoke-WebRequest` on Windows PowerShell 5.1 has no
+`-SkipHttpErrorCheck`, so it throws on any 4xx instead of returning it; and a SQL string
+containing `$100000` was silently expanded as a PowerShell variable.
+
+**Solution**: Put the JSON in a file and use `curl.exe --data-binary "@file.json"`, and pass SQL
+through a non-interpolating here-string (`@' ... '@`). Also add `--max-time` - one run hung for
+sixteen minutes with the request never reaching the server, which the server log made obvious
+because it showed no new entry. Delete the fixture files afterwards; they contain a password.
+
+**Code Reference**: none - local verification technique
+
 ### Placeholder: `getCloudflareContext()` throws under jsdom
 
 **Problem**: _to be filled in_
@@ -1703,25 +1877,53 @@ cleanup to do silently. Neither affects test results.
 **Solution**: _to be filled in_
 **Code Reference**: `src/lib/services/user-service.ts`
 
-### Placeholder: hashing works in `npm run dev` but not `npm run preview`
+### Not encountered (Phase 4): hashing works in `npm run dev` but not `npm run preview`
 
-**Problem**: _to be filled in_
-**Cause**: _to be filled in_
-**Solution**: _to be filled in_
+**Problem**: Did not happen. Kept because it was a real risk worth planning for, and its absence
+is itself a result.
+
+**Cause**: Would have meant a Web Crypto difference between Node and workerd. There is none for
+what this uses: `crypto.subtle.importKey`, `deriveBits` with PBKDF2 and SHA-256,
+`getRandomValues`, `atob`, and `btoa` all behave identically. A hash produced under Node in the
+unit tests and a hash produced by workerd during `preview` are the same 90-character format, and
+each verifies in its own runtime.
+
+**Solution**: Nothing needed. If a future change reaches for a Node built-in such as
+`node:crypto`'s `pbkdf2`, this entry becomes live again - which is the reason the PRD insists on
+`preview` rather than `dev` for anything runtime-sensitive.
+
 **Code Reference**: `src/lib/password.ts`
 
-### Placeholder: a duplicate registration returns 500 instead of 400
+### Not encountered (Phase 4): a duplicate registration returns 500 instead of 400
 
-**Problem**: _to be filled in_
-**Cause**: _to be filled in - the error text did not match what `createUser` looks for, so it fell through to the generic error path. Phase 1 already confirmed the real strings against local D1: `UNIQUE constraint failed: users.username` and `UNIQUE constraint failed: users.email`, each suffixed with ` : SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_UNIQUE)`. Match on the `users.<column>` substring, not the whole message._
-**Solution**: _to be filled in - compare against the strings above rather than a guess_
+**Problem**: Did not happen. Both duplicate paths returned 400 with the right message on the
+first `preview` attempt: `Username already taken` for a username-only collision and
+`Email already registered` for a body colliding on both.
+
+**Cause**: Would have meant `createUser`'s substring match missed the real D1 error text. It did
+not, because Phase 1 read the actual strings out of local D1 rather than guessing them, and
+Phase 2 matched on the `users.<column>` substring instead of the whole message.
+
+**Solution**: Nothing needed. The one thing this run *did* teach: when a body collides on both
+columns, which message you get depends on which unique index SQLite checks first. Do not write a
+test that pins that ordering.
+
 **Code Reference**: `src/lib/services/user-service.ts`
 
-### Placeholder: `verifyPassword` fails for a hash it produced itself
+### Not encountered (Phase 4): `verifyPassword` fails for a hash it produced itself
 
-**Problem**: _to be filled in_
-**Cause**: _to be filled in - likely a base64 round-trip issue, or splitting on `$` with a limit that drops part of the key_
-**Solution**: _to be filled in_
+**Problem**: Did not happen. Round-tripping worked on the first run, in the unit tests and again
+through `preview` where the hash made a real trip through a D1 `TEXT` column.
+
+**Cause**: Would have been a base64 round-trip bug or a `split("$")` that dropped part of the
+key. Both were avoided by design rather than by luck: base64 never contains `$`, so an unlimited
+`split("$")` is safe, and the length check on `parts` catches anything unexpected before it can be
+misread.
+
+**Solution**: Nothing needed. The guard that makes this class of bug loud is asserting the part
+count and the algorithm prefix *before* deriving anything, so a malformed value throws instead of
+quietly failing verification and looking like a wrong password.
+
 **Code Reference**: `src/lib/password.ts`
 
 ---
@@ -1788,9 +1990,9 @@ Read this before touching code in this sprint.
 ## Current Status
 
 **Last Updated**: August 23, 2026
-**Current Phase**: Phases 1 to 3 approved and committed, awaiting "go Phase 4"
-**Status**: PHASE 3 COMPLETED AND APPROVED - validation, three route handlers, and 121 passing
-tests, committed and pushed to `feature/register-login-logout`
+**Current Phase**: Phase 4 complete, awaiting Kusuma's review
+**Status**: PHASE 4 COMPLETED - real PBKDF2 hashing, four pages, three client components, and
+186 passing tests. The feature works end to end on the Workers runtime. Not yet committed.
 **Branch**: `feature/register-login-logout`
 
 **What exists now**, all of it exercised rather than inspected:
@@ -1798,23 +2000,34 @@ tests, committed and pushed to `feature/register-login-logout`
 | Artifact | State |
 |---|---|
 | `vitest.config.ts` | jsdom, `globals: true`, React plugin, `vite-tsconfig-paths` |
-| `package.json` | six dev packages added, plus `test` and `test:watch` scripts |
+| `package.json` | seven dev packages and `zod`, plus `test` and `test:watch` scripts |
+| `eslint.config.mjs` | `.wrangler/**` added to `ignores` after `preview` generated bundles there |
 | `src/lib/utils.test.ts` | 3 tests over `cn`, importing through `@/lib/utils` |
 | `wrangler.jsonc` | `d1_databases` block, binding `DB` |
 | `cloudflare-env.d.ts` | regenerated, declares `DB: D1Database` |
 | `migrations/0001_create_users_table.sql` | eight columns, both `UNIQUE` constraints, both named indexes |
 | `migrations/0001_create_users_table.test.ts` | 8 tests over the migration's declared shape |
-| Local D1 `aisprint-quizmaker-db` | migration applied, `users` table present and empty |
+| Local D1 `aisprint-quizmaker-db` | migration applied; holds one row from the Phase 4 runtime check |
 | `src/lib/services/user-service.ts` | seven exports, the only `getCloudflareContext()` caller and the only SQL in the codebase |
 | `src/lib/services/user-service.test.ts` | 38 tests against a fake D1, two of them mutation-checked |
-| `src/lib/validation/auth.ts` | `registerSchema`, `loginSchema`, `toFieldErrors` |
+| `src/lib/validation/auth.ts` | `registerSchema`, `loginSchema`, `toFieldErrors` - now imported by the forms too |
 | `src/lib/validation/auth.test.ts` | 37 tests, including every documented message and both casing rules |
-| `src/lib/password.ts` | interface only - both functions throw until Phase 4 fills them in |
-| `src/app/api/auth/{register,login,logout}/route.ts` | the three endpoints, each with a colocated test |
-| `.../route.test.ts` x3 | 46 tests over status codes and exact bodies, two of them mutation-checked |
+| `src/lib/password.ts` | real Web Crypto PBKDF2-SHA256 per OD3; the stub is gone |
+| `src/lib/password.test.ts` | 24 tests: format, salt, iteration handling, and nine malformed-input cases |
+| `src/lib/auth-client.ts` | `postAuth`, the shared field-versus-form error rule |
+| `src/app/api/auth/{register,login,logout}/route.ts` | the three endpoints, unchanged since Phase 3 |
+| `.../route.test.ts` x3 | 38 tests, now running against real hashing rather than a mock |
+| `src/app/api/auth/register-login-flow.test.ts` | 4 tests taking register's output into login, D1 mocked and crypto real |
+| `src/components/auth/{register-form,login-form,logout-button}.tsx` | the three `'use client'` files in the feature |
+| `.../{register-form,login-form,logout-button}.test.tsx` | 35 component tests, queried by role and accessible name |
+| `src/app/page.tsx` | `redirect("/login")`; the starter page is gone |
+| `src/app/{login,register,mcq}/page.tsx` | Server Components; `/mcq` is the labelled static stub |
 
-**Verified by command output**: `npm run test` gives 7 files / 121 tests passing, `npm run lint`
-exits clean with no output, and `npx tsc --noEmit` exits 0. From Phase 1:
+**Verified by command output**: `npm run test` gives 12 files / 186 tests passing, `npm run lint`
+exits clean with no output, and `npx tsc --noEmit` exits 0. `npm run preview` serves the feature on
+workerd, and the ten requests in the Phase 4 outcome table all returned what this PRD says they
+should - including a `SELECT` confirming the stored `password_hash` is in the OD3 format and
+contains no plaintext. From Phase 1:
 `PRAGMA table_info(users)` returns the eight columns in schema order with `notnull = 1` on all but
 `id` and `dflt_value = "CURRENT_TIMESTAMP"` on both timestamps, `PRAGMA index_list(users)` returns
 five rows, and a throwaway insert proved SQLite generates the `id` and both timestamps unprompted
@@ -1822,14 +2035,20 @@ while re-using a username or an email raises `UNIQUE constraint failed: users.<c
 added a second round of real-database checks before writing any code: `INSERT`, `UPDATE`, and
 `DELETE` with `RETURNING` all work on local D1, and both `UPDATE` and `DELETE` against a
 non-existent id come back with an empty `results` array, which is what `updateUser` and
-`deleteUser` rely on. Every probe row was deleted; the table is empty.
+`deleteUser` rely on. Every probe row was deleted.
+
+The local `users` table now holds exactly one row, `KusumaBS`, left there by the Phase 4 runtime
+check. It is local-only state and is not committed. Delete it before Phase 5's end-to-end run if a
+clean table is wanted, or keep it as a known-good login.
 
 **Every test file so far is known to be capable of failing**, not assumed to be. Phase 1 broke the
 migration SQL and watched the right two tests fail. Phase 2 did the same twice: spreading the row
 in `toPublicUser` failed 3 tests, and lowercasing the username on insert failed 2. Phase 3 did it
 twice more: adding a `reason` key to the not-found 401 failed 2 tests including the byte-identical
-comparison, and returning 409 for a duplicate failed 3. Every mutation was reverted and the suite
-re-verified.
+comparison, and returning 409 for a duplicate failed 3. Phase 4 did it three times: verifying
+against the `ITERATIONS` constant instead of the count stored in the hash failed 1, a fixed salt
+failed 1, and pointing register at `/login` while flattening `fields` into a form-level message
+failed 2. Every mutation was reverted and the suite re-verified.
 
 **Also worth knowing**: the PRD's predicted four indexes was wrong and is corrected to five; the
 fifth is SQLite's primary-key index. The PRD also said "three of the six" service functions have no
@@ -1837,14 +2056,20 @@ caller when it lists four - corrected. `npm run test` prints two forward-compati
 from Vite on every passing run, left in place deliberately. One single-file run died with
 `Timeout waiting for worker to respond` and no tests; an immediate rerun was fine, and it is written
 up in Troubleshooting so it is not mistaken for a real failure next time. `workerd` has run cleanly
-on Windows across every `wrangler` call so far.
+on Windows across every `wrangler` call, including the full `preview` build, which prints a
+"not fully compatible with Windows" warning and then works anyway.
 
-**Not done, by instruction**: There is still no UI - no pages, no
-forms, and `src/app/page.tsx` is still the Next.js starter. **Real password hashing does not exist
-yet**, so the three endpoints are not usable end to end: `src/lib/password.ts` declares
-`hashPassword` and `verifyPassword` but both throw, and every test that needs them mocks the
-module. That is the intended Phase 3 boundary, not an oversight. The user service still has no
-crypto dependency and never sees a plaintext password.
+Two more things Phase 4 corrected in this PRD. The Phase 3 sequencing note promised the route tests
+would "keep passing unchanged" once real hashing landed; Kusuma asked for the mock to be dropped
+instead, so two of those tests changed shape and one was removed - the note is now marked
+superseded rather than quietly left wrong. And three of the five Troubleshooting placeholders
+written before Phase 4 never happened; they are marked "Not encountered" with the reason, because a
+predicted failure that did not occur is worth recording as much as one that did.
+
+**Not done, by instruction**: nothing from Phase 4's task list. What remains is Phase 5:
+dark-mode and browser verification of the four pages, the two "submits successfully, landing on
+`/mcq`" criteria that need a real browser, a second-account check that `Kusuma` and `kusuma` can
+both register, updating `AGENTS.md`, and exporting this chat.
 
 **Open Decisions**: all three approved by Kusuma on August 23, 2026. OD1 - the six-package
 Vitest install plus `vitest.config.ts` and the test scripts. OD2 - `zod` for route validation.
@@ -1881,8 +2106,16 @@ that field, max-length edge case included, so the two long-input messages that r
 complaint are accepted rather than something to fix; and a non-JSON body returns
 `{ "error": "Validation failed" }` with no `fields` key. None of these are open questions any more.
 
-**Next Steps**: Phase 3 is approved, committed, and pushed. Wait for an explicit "go Phase 4"
-before writing anything. Phase 4 replaces the two `password.ts` bodies with Web Crypto
-PBKDF2-SHA256 per OD3 - the existing route tests should keep passing completely unchanged, which is
-the real test of whether this seam was drawn in the right place - and then builds the four pages
-and two client forms.
+**Decisions Phase 4 made**, all five written up in the Phase 4 section: the route tests dropped the
+password mock entirely and two of them changed shape while one was removed; the forms import the
+same Zod schemas the routes validate with rather than restating the rules; `src/lib/auth-client.ts`
+holds the shared field-versus-form error rule; the submit button stays disabled through a
+successful navigation and is re-enabled on every failure path; and `esbuild` was added to
+`devDependencies` with Kusuma's approval mid-phase to repair an upstream packaging gap. The last of
+these is the only one that changed `package.json`, and it was asked about before it was done.
+
+**Next Steps**: Phase 4 is complete and awaiting review. Nothing is committed. On approval, commit
+and push to `feature/register-login-logout` and stop; do not start Phase 5 without an explicit
+"go Phase 5". Phase 5 is verification and documentation: run the feature in a real browser
+including dark mode, tick the Engineering block and the four remaining criteria, update
+`AGENTS.md`, and export this Cursor chat.
