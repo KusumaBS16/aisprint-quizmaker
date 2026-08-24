@@ -22,7 +22,8 @@
 		{
 			"binding": "DB",
 			"database_name": "aisprint-quizmaker-db",
-			"database_id": "66965f77-602d-49a0-b582-bd6d5318ee9f"
+			"database_id": "66965f77-602d-49a0-b582-bd6d5318ee9f",
+			"migrations_dir": "migrations"
 		}
 	]
 	/**
