@@ -3,11 +3,21 @@ import type { z } from "zod";
 
 import {
   loginSchema,
+  registerFormSchema,
   registerSchema,
   toFieldErrors,
 } from "@/lib/validation/auth";
 
-const validRegisterInput = {
+const validRegisterFormInput = {
+  firstName: "Kusuma",
+  lastName: "Reddy",
+  username: "Kusuma",
+  email: "kusuma@example.com",
+  password: "correct-horse-battery",
+  confirmPassword: "correct-horse-battery",
+};
+
+const validRegisterApiInput = {
   firstName: "Kusuma",
   lastName: "Reddy",
   username: "Kusuma",
@@ -27,6 +37,10 @@ function messagesFor(
     .map((issue) => issue.message);
 }
 
+function parseRegisterForm(input: unknown) {
+  return registerFormSchema.safeParse(input);
+}
+
 function parseRegister(input: unknown) {
   return registerSchema.safeParse(input);
 }
@@ -35,23 +49,23 @@ function parseLogin(input: unknown) {
   return loginSchema.safeParse(input);
 }
 
-function registerWithout(field: keyof typeof validRegisterInput) {
-  const input: Record<string, unknown> = { ...validRegisterInput };
+function registerWithout(field: keyof typeof validRegisterApiInput) {
+  const input: Record<string, unknown> = { ...validRegisterApiInput };
   delete input[field];
   return parseRegister(input);
 }
 
 describe("registerSchema", () => {
   it("accepts the five documented fields", () => {
-    const result = parseRegister(validRegisterInput);
+    const result = parseRegister(validRegisterApiInput);
 
     expect(result.success).toBe(true);
-    expect(result.success && result.data).toEqual(validRegisterInput);
+    expect(result.success && result.data).toEqual(validRegisterApiInput);
   });
 
   it("trims the display names", () => {
     const result = parseRegister({
-      ...validRegisterInput,
+      ...validRegisterApiInput,
       firstName: "  Kusuma  ",
       lastName: "  Reddy  ",
     });
@@ -62,7 +76,7 @@ describe("registerSchema", () => {
 
   it("trims the username but keeps its casing", () => {
     const result = parseRegister({
-      ...validRegisterInput,
+      ...validRegisterApiInput,
       username: "  Kusuma  ",
     });
 
@@ -70,14 +84,14 @@ describe("registerSchema", () => {
   });
 
   it("leaves a mixed-case username exactly as typed", () => {
-    const result = parseRegister({ ...validRegisterInput, username: "KusumaBS" });
+    const result = parseRegister({ ...validRegisterApiInput, username: "KusumaBS" });
 
     expect(result.success && result.data.username).toBe("KusumaBS");
   });
 
   it("trims and lowercases the email", () => {
     const result = parseRegister({
-      ...validRegisterInput,
+      ...validRegisterApiInput,
       email: "  Kusuma@Example.COM  ",
     });
 
@@ -86,7 +100,7 @@ describe("registerSchema", () => {
 
   it("does not trim the password, since whitespace is part of it", () => {
     const result = parseRegister({
-      ...validRegisterInput,
+      ...validRegisterApiInput,
       password: "  spaces are meaningful  ",
     });
 
@@ -97,7 +111,7 @@ describe("registerSchema", () => {
 
   it("drops unknown fields, so a stray confirmPassword cannot travel further", () => {
     const result = parseRegister({
-      ...validRegisterInput,
+      ...validRegisterApiInput,
       confirmPassword: "correct-horse-battery",
     });
 
@@ -141,7 +155,7 @@ describe("registerSchema", () => {
   });
 
   it("rejects a first name that is only whitespace", () => {
-    const result = parseRegister({ ...validRegisterInput, firstName: "   " });
+    const result = parseRegister({ ...validRegisterApiInput, firstName: "   " });
 
     expect(messagesFor(result, "firstName")).toContain(
       "First name is required",
@@ -150,7 +164,7 @@ describe("registerSchema", () => {
 
   it("rejects a malformed email", () => {
     const result = parseRegister({
-      ...validRegisterInput,
+      ...validRegisterApiInput,
       email: "kusuma-at-example",
     });
 
@@ -160,7 +174,7 @@ describe("registerSchema", () => {
   });
 
   it("rejects a username of two characters", () => {
-    const result = parseRegister({ ...validRegisterInput, username: "ku" });
+    const result = parseRegister({ ...validRegisterApiInput, username: "ku" });
 
     expect(messagesFor(result, "username")).toContain(
       "Must be between 3 and 32 characters",
@@ -168,7 +182,7 @@ describe("registerSchema", () => {
   });
 
   it("rejects a username that is only long enough before trimming", () => {
-    const result = parseRegister({ ...validRegisterInput, username: "  ku  " });
+    const result = parseRegister({ ...validRegisterApiInput, username: "  ku  " });
 
     expect(messagesFor(result, "username")).toContain(
       "Must be between 3 and 32 characters",
@@ -176,17 +190,17 @@ describe("registerSchema", () => {
   });
 
   it("accepts a username at both length boundaries", () => {
-    expect(parseRegister({ ...validRegisterInput, username: "abc" }).success).toBe(
+    expect(parseRegister({ ...validRegisterApiInput, username: "abc" }).success).toBe(
       true,
     );
     expect(
-      parseRegister({ ...validRegisterInput, username: "a".repeat(32) }).success,
+      parseRegister({ ...validRegisterApiInput, username: "a".repeat(32) }).success,
     ).toBe(true);
   });
 
   it("rejects a username of thirty-three characters", () => {
     const result = parseRegister({
-      ...validRegisterInput,
+      ...validRegisterApiInput,
       username: "a".repeat(33),
     });
 
@@ -197,29 +211,29 @@ describe("registerSchema", () => {
 
   it("accepts a username containing punctuation or an at sign", () => {
     expect(
-      parseRegister({ ...validRegisterInput, username: "kusuma@example.com" })
+      parseRegister({ ...validRegisterApiInput, username: "kusuma@example.com" })
         .success,
     ).toBe(true);
     expect(
-      parseRegister({ ...validRegisterInput, username: "kusuma.b-s_16" }).success,
+      parseRegister({ ...validRegisterApiInput, username: "kusuma.b-s_16" }).success,
     ).toBe(true);
   });
 
   it("rejects a seven-character password and accepts an eight-character one", () => {
     expect(
       messagesFor(
-        parseRegister({ ...validRegisterInput, password: "1234567" }),
+        parseRegister({ ...validRegisterApiInput, password: "1234567" }),
         "password",
       ),
     ).toContain("Must be at least 8 characters");
     expect(
-      parseRegister({ ...validRegisterInput, password: "12345678" }).success,
+      parseRegister({ ...validRegisterApiInput, password: "12345678" }).success,
     ).toBe(true);
   });
 
   it("rejects a password over 128 characters", () => {
     const result = parseRegister({
-      ...validRegisterInput,
+      ...validRegisterApiInput,
       password: "a".repeat(129),
     });
 
@@ -228,7 +242,7 @@ describe("registerSchema", () => {
 
   it("rejects a first name over 50 characters", () => {
     const result = parseRegister({
-      ...validRegisterInput,
+      ...validRegisterApiInput,
       firstName: "a".repeat(51),
     });
 
@@ -236,7 +250,7 @@ describe("registerSchema", () => {
   });
 
   it("rejects a non-string field with that field's message", () => {
-    const result = parseRegister({ ...validRegisterInput, username: 12345 });
+    const result = parseRegister({ ...validRegisterApiInput, username: 12345 });
 
     expect(messagesFor(result, "username")).toContain(
       "Must be between 3 and 32 characters",
@@ -246,6 +260,56 @@ describe("registerSchema", () => {
   it("rejects a body that is not an object at all", () => {
     expect(parseRegister(undefined).success).toBe(false);
     expect(parseRegister("not a body").success).toBe(false);
+  });
+});
+
+describe("registerFormSchema", () => {
+  it("accepts matching password and confirmPassword", () => {
+    const result = parseRegisterForm(validRegisterFormInput);
+
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toEqual(validRegisterFormInput);
+  });
+
+  it("rejects a missing confirmPassword", () => {
+    const input = { ...validRegisterFormInput };
+    delete (input as Partial<typeof input>).confirmPassword;
+
+    expect(messagesFor(parseRegisterForm(input), "confirmPassword")).toContain(
+      "Confirm password is required",
+    );
+  });
+
+  it("rejects an empty confirmPassword", () => {
+    expect(
+      messagesFor(
+        parseRegisterForm({ ...validRegisterFormInput, confirmPassword: "" }),
+        "confirmPassword",
+      ),
+    ).toContain("Confirm password is required");
+  });
+
+  it("rejects mismatched passwords on confirmPassword", () => {
+    expect(
+      messagesFor(
+        parseRegisterForm({
+          ...validRegisterFormInput,
+          confirmPassword: "different-password",
+        }),
+        "confirmPassword",
+      ),
+    ).toContain("Passwords do not match");
+  });
+
+  it("does not trim either password field before comparing them", () => {
+    const password = "  spaces are meaningful  ";
+    const result = parseRegisterForm({
+      ...validRegisterFormInput,
+      password,
+      confirmPassword: password,
+    });
+
+    expect(result.success).toBe(true);
   });
 });
 
@@ -329,7 +393,7 @@ describe("loginSchema", () => {
 describe("toFieldErrors", () => {
   it("returns one string per field, not an array", () => {
     const result = parseRegister({
-      ...validRegisterInput,
+      ...validRegisterApiInput,
       email: "nope",
       password: "short",
     });
@@ -347,7 +411,7 @@ describe("toFieldErrors", () => {
   });
 
   it("keeps the first message when one field breaks several rules", () => {
-    const result = parseRegister({ ...validRegisterInput, email: "" });
+    const result = parseRegister({ ...validRegisterApiInput, email: "" });
     if (result.success) {
       throw new Error("Expected parsing to fail");
     }

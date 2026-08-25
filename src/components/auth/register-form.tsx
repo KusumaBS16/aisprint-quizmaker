@@ -13,10 +13,14 @@ import {
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { postAuth } from "@/lib/auth-client";
-import { registerSchema, toFieldErrors } from "@/lib/validation/auth";
+import {
+  registerFormSchema,
+  registerSchema,
+  toFieldErrors,
+} from "@/lib/validation/auth";
 
-// The same schema the route validates with, so the message a user sees before submitting is
-// the message the server would have sent. There is one set of rules, not a client copy of them.
+// registerFormSchema extends the API schema with confirmPassword. The five API fields share
+// one set of rules with the server; confirmPassword is validated only before submit.
 const FIELDS = [
   {
     name: "firstName",
@@ -38,6 +42,12 @@ const FIELDS = [
     type: "password",
     autoComplete: "new-password",
   },
+  {
+    name: "confirmPassword",
+    label: "Confirm password",
+    type: "password",
+    autoComplete: "new-password",
+  },
 ] as const;
 
 const EMPTY = {
@@ -46,6 +56,7 @@ const EMPTY = {
   username: "",
   email: "",
   password: "",
+  confirmPassword: "",
 };
 
 export function RegisterForm() {
@@ -59,7 +70,7 @@ export function RegisterForm() {
     event.preventDefault();
     setFormError(null);
 
-    const parsed = registerSchema.safeParse(values);
+    const parsed = registerFormSchema.safeParse(values);
     if (!parsed.success) {
       setFieldErrors(toFieldErrors(parsed.error));
       return;
@@ -68,7 +79,10 @@ export function RegisterForm() {
     setFieldErrors({});
     setSubmitting(true);
 
-    const result = await postAuth("/api/auth/register", parsed.data);
+    const result = await postAuth(
+      "/api/auth/register",
+      registerSchema.parse(parsed.data),
+    );
 
     if (result.ok) {
       // Left disabled through the navigation, so a second click cannot fire a second request.

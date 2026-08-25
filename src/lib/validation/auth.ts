@@ -8,6 +8,8 @@ const LAST_NAME_MESSAGE = "Last name is required";
 const USERNAME_MESSAGE = "Must be between 3 and 32 characters";
 const EMAIL_MESSAGE = "Must be a valid email address";
 const PASSWORD_MESSAGE = "Must be at least 8 characters";
+const CONFIRM_PASSWORD_MESSAGE = "Confirm password is required";
+const PASSWORDS_DO_NOT_MATCH_MESSAGE = "Passwords do not match";
 
 export const registerSchema = z.object({
   firstName: z
@@ -40,6 +42,18 @@ export const registerSchema = z.object({
     .max(128, PASSWORD_MESSAGE),
 });
 
+// Client-only: confirmPassword is validated here and never sent to the API.
+export const registerFormSchema = registerSchema
+  .extend({
+    confirmPassword: z
+      .string({ error: CONFIRM_PASSWORD_MESSAGE })
+      .min(1, CONFIRM_PASSWORD_MESSAGE),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: PASSWORDS_DO_NOT_MATCH_MESSAGE,
+    path: ["confirmPassword"],
+  });
+
 // Login deliberately carries none of register's length rules. A credential that register
 // would have rejected is a failed login, not a malformed request, so it has to reach the
 // lookup and come back as a 401.
@@ -54,6 +68,7 @@ export const loginSchema = z.object({
 });
 
 export type RegisterInput = z.infer<typeof registerSchema>;
+export type RegisterFormInput = z.infer<typeof registerFormSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 
 export function toFieldErrors(error: ZodError): Record<string, string> {

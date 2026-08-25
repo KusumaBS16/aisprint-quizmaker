@@ -179,8 +179,9 @@ own quiz history rather than an anonymous one-off session.
   hash.
 - `POST /api/auth/logout` - a stateless acknowledgement. See Known Limitations.
 - `/` redirecting to `/login`.
-- `/register` page with a five-field form and no confirm-password input, validation errors
-  shown inline.
+- `/register` page with a six-field form (including confirm password), validation errors
+  shown inline. The API still accepts only the five credential fields; `confirmPassword` is
+  validated client-side and never posted.
 - `/login` page with a username and password form, validation errors shown inline.
 - `/mcq` page - a **stub** only: static placeholder questions, no scoring, no persistence,
   no data from D1.
@@ -240,8 +241,6 @@ Considered during planning and deliberately dropped.
 - **`src/lib/db.ts` as a standalone binding accessor** - cut because `user-service.ts` is
   already the single D1 boundary, and a second file to hold one `getCloudflareContext()` call
   is indirection without a payoff.
-- **A `confirmPassword` field** - cut so the form posts exactly the API's five fields. The
-  cost is a typo'd password creating an unreachable account, recorded under Known Limitations.
 - **A character-set rule on usernames** - cut, leaving only the 3 to 32 length rule. It also
   removes the guarantee that a username cannot look like an email address.
 - **Array-valued `fields` in error responses** - cut in favour of one string per field, which
@@ -501,6 +500,15 @@ spellings.
 | `email` | required, valid email format, max 254 characters, trimmed and lowercased | `Must be a valid email address` |
 | `password` | required, 8 to 128 characters | `Must be at least 8 characters` |
 
+**Register form validation** (client only, `registerFormSchema` in
+`src/lib/validation/auth.ts`). Extends `registerSchema` with one extra field. Nothing here
+is part of the API contract; the form validates with `registerFormSchema`, then posts only
+the five API fields via `registerSchema.parse(...)`.
+
+| Field | Rule | Message on failure |
+|---|---|---|
+| `confirmPassword` | required; must equal `password` exactly (neither field trimmed) | `Confirm password is required` when empty; `Passwords do not match` when different |
+
 There is **no character-set restriction on the username**. Any 3 to 32 character string is
 accepted, so a username may contain spaces, punctuation, or an `@`. Two consequences worth
 knowing rather than discovering:
@@ -630,16 +638,15 @@ This wrapping lives in the form components. The API contract stays as specified.
 #### Register page (`/register`)
 
 - Card-wrapped form, centered.
-- **Five fields, in order**: `firstName` (text, required), `lastName` (text, required),
+- **Six fields, in order**: `firstName` (text, required), `lastName` (text, required),
   `username` (text, required), `email` (type email, required), `password` (type password,
-  required).
-- **No `confirmPassword` field.** The form posts exactly the five fields the API accepts, so
-  there is nothing to reconcile between the UI and the contract. The cost is real and worth
-  naming: a typo in the password field goes undetected, and with no password reset flow in
-  Sprint 1, that means an account nobody can get into. A future sprint adds either
-  confirmation or recovery.
+  required), `confirmPassword` (type password, required).
+- **The form posts exactly the five fields the API accepts.** `confirmPassword` is validated
+  client-side with `registerFormSchema` and stripped before the POST body is built, so the UI
+  and the contract stay aligned without sending a sixth field to the server.
 - Client-visible validation, mirroring the Zod rules: any empty required field, invalid email
-  format, a username outside 3 to 32 characters, and a password under 8 characters.
+  format, a username outside 3 to 32 characters, a password under 8 characters, an empty
+  confirm password, and a confirm password that does not match.
 - Server-driven errors: a 400 with `fields` renders each string on its matching input; a 400
   with only `error` ("Username already taken", "Email already registered") renders as a
   form-level message above the fields.
@@ -852,15 +859,18 @@ return the documented status codes and exact message strings.
 **Tasks**:
 
 1. Add `zod`, approved in OD2: `npm install zod`.
-2. Write `src/lib/validation/auth.test.ts` first, covering all five register fields: valid
+2. Write `src/lib/validation/auth.test.ts` first, covering all five register API fields: valid
    input, each field missing, a malformed email, a username of 2 characters, a username of 33
    characters, a 7-character password, and the login schema's deliberate lack of any length rule.
+   After the post-sprint `confirmPassword` addition, extend coverage with `registerFormSchema`
+   tests for empty confirm, mismatch, and matching passwords.
    Cover the casing rules explicitly, since they differ per field and are easy to get wrong:
    `username` comes out trimmed with its casing intact (`"  Kusuma  "` becomes `"Kusuma"`, not
    `"kusuma"`), while `email` comes out trimmed *and* lowercased. Assert the exact message strings
    from the validation table, since the form renders them verbatim.
-3. Implement `src/lib/validation/auth.ts` with `registerSchema` and `loginSchema`. Neither
-   mentions `confirmPassword`, because the form does not have one.
+3. Implement `src/lib/validation/auth.ts` with `registerSchema`, `registerFormSchema`, and
+   `loginSchema`. `registerSchema` and `loginSchema` are what the routes validate with;
+   `registerFormSchema` adds `confirmPassword` for the register form only.
 4. Write route handler tests first, mocking `@/lib/services/user-service` and
    `@/lib/password`. Cover every documented outcome:
    - register: 201 with the wrapped user, 400 `Validation failed` with string-valued `fields`,
@@ -968,16 +978,17 @@ of them changed shape as a result and one was removed; Phase 4's outcome records
 6. Drop the `@/lib/password` mock from the Phase 3 route tests and confirm they still pass
    against the real module, then add one register-then-login test proving a password hashed by
    `createUser`'s input verifies at login against a mocked D1.
-7. Write `src/components/auth/register-form.tsx` with the five fields and
-   `src/components/auth/login-form.tsx` with username and password, both client components
-   using the `field` primitives. Push `'use client'` no higher than these two files. Adapt each
-   string in `fields` into `[{ message }]` for `FieldError`, and render a top-level `error` as
-   a form-level message.
+7. Write `src/components/auth/register-form.tsx` with the six fields (including confirm
+   password) and `src/components/auth/login-form.tsx` with username and password, both client
+   components using the `field` primitives. Push `'use client'` no higher than these two files.
+   Adapt each string in `fields` into `[{ message }]` for `FieldError`, and render a top-level
+   `error` as a form-level message.
 8. Write component tests with Testing Library, querying by role and accessible name
    (`getByRole("button", { name: /sign in/i })`) and driving input with `userEvent`. Cover all
-   five register fields, a 400 whose `fields` puts a message on the email input, a 400 whose
-   only content is "Username already taken" rendering form-level, and a 401 rendering exactly
-   "Invalid credentials". These are the tests that need the sixth package from OD1.
+   six register fields (including confirm password and mismatch validation), a 400 whose
+   `fields` puts a message on the email input, a 400 whose only content is "Username already
+   taken" rendering form-level, and a 401 rendering exactly "Invalid credentials". These are
+   the tests that need the sixth package from OD1.
 9. Build `src/app/register/page.tsx` and `src/app/login/page.tsx` as Server Components that
    render those forms. Register redirects to `/mcq` on success.
 10. Replace the starter `src/app/page.tsx` with an unconditional `redirect("/login")` from
@@ -1082,9 +1093,10 @@ matches what was built, and the sprint is submitted.
 2. Run `npm run lint` and `npm run build`. Report the real output. `AGENTS.md`: do not describe
    work as done based on inspection alone.
 3. Run `npm run preview` and walk the whole flow by hand on the Workers runtime: `/` lands on
-   `/login`; register with five fields lands on `/mcq`; a duplicate username shows "Username
-   already taken"; a duplicate email shows "Email already registered"; a wrong password shows
-   "Invalid credentials"; login lands on `/mcq`; logout lands back on `/login`.
+   `/login`; register with six fields (confirm password included) lands on `/mcq`; a duplicate
+   username shows "Username already taken"; a duplicate email shows "Email already registered";
+   a wrong password shows "Invalid credentials"; login lands on `/mcq`; logout lands back on
+   `/login`.
 4. Inspect a real stored row:
    `npx wrangler d1 execute aisprint-quizmaker-db --local --command "SELECT id, username, email, password_hash, created_at, updated_at FROM users"`.
    Confirm `password_hash` is a `pbkdf2-sha256$...` string and not the password, and that both
@@ -1190,9 +1202,11 @@ installed. Both are written up below.
 | `migrations/0001_create_users_table.test.ts` | Asserts the migration declares the columns, constraints, and indexes this PRD specifies. |
 | `src/lib/services/user-service.ts` | The six CRUD functions plus `toPublicUser`. The single call site for `getCloudflareContext()`, the only place SQL is written, and the only camelCase-to-snake_case mapping. The one module other tests mock. |
 | `src/lib/password.ts` | `hashPassword`, `verifyPassword`. The only place crypto happens and the only place the hash string format is written or parsed. |
-| `src/lib/validation/auth.ts` | `registerSchema`, `loginSchema`. |
+| `src/lib/validation/auth.ts` | `registerSchema`, `registerFormSchema`, `loginSchema`. |
 | `src/app/api/auth/{register,login,logout}/route.ts` | HTTP shells: validate, call `user-service`, shape with `toPublicUser`. Register and login also call the password module. |
-| `src/components/auth/{register-form,login-form}.tsx` | Client components. Validate with the same Zod schemas the routes use, so there is no second copy of the rules. |
+| `src/components/auth/{register-form,login-form}.tsx` | Client components. Register validates
+  with `registerFormSchema` then posts `registerSchema`'s five fields; login validates with the
+  same `loginSchema` the route uses, so there is no second copy of the rules. |
 | `src/components/auth/logout-button.tsx` | Client component. POSTs to `/api/auth/logout`, then redirects to `/login` whether or not the call succeeded. |
 | `src/lib/auth-client.ts` | `postAuth`. The one place that decides whether an error response belongs on an input or above the form, shared by both forms. |
 | `src/app/page.tsx` | Redirects to `/login`. Replaces the starter page. |
@@ -1323,9 +1337,8 @@ not defects to file.
    so response time leaks whether a username exists even though the response body does not.
    Fixing it means hashing against a dummy value on the not-found path, which Sprint 1 does
    not do. The 401 body is identical; the timing is not.
-10. **A mistyped password at registration is unrecoverable.** There is no `confirmPassword`
-    field and no password reset flow, so a typo creates an account nobody can log into. This
-    is the sharpest edge in the sprint and the first thing worth fixing in the next one.
+10. **No password reset flow.** `confirmPassword` catches a typo at registration, but a
+    forgotten password still means a permanently unreachable account until recovery is built.
 11. **Login is case-sensitive on the username.** Usernames are trimmed but not lowercased, so
     someone who registered as `Kusuma` and later types `kusuma` gets "Invalid credentials" with
     no hint that casing is the problem - the 401 deliberately says nothing. The same rule lets
@@ -1527,10 +1540,10 @@ a mocked `useRouter` proves the form *asks* for `/mcq`, and only a browser prove
 The agent has no browser, so those two and dark mode are Kusuma's to confirm.
 
 - [x] `/` redirects to `/login` - 307 with `Location: /login` on the Workers runtime
-- [ ] `/register` shows exactly five fields, with no confirm-password input, and submits
-      successfully, landing on `/mcq` - the served HTML carries exactly `firstName`,
-      `lastName`, `username`, `email`, `password` and the word "confirm" appears nowhere on the
-      page, and the `/mcq` push is asserted in a component test; **the arrival needs a browser**
+- [ ] `/register` shows exactly six fields (including confirm password), posts only the five
+      API fields, and submits successfully, landing on `/mcq` - the served HTML carries
+      `firstName`, `lastName`, `username`, `email`, `password`, and `confirmPassword`, and the
+      POST body carries only the five API fields; **the arrival needs a browser**
 - [ ] `/login` shows a username field and no email field, and submits successfully, landing on
       `/mcq` - the served HTML carries `username` and `password` with no `type="email"`;
       **the arrival needs a browser**
@@ -1753,15 +1766,10 @@ not a secret, and there is no signing key because there are no tokens. If that c
   page shows username and email as separate inputs. If this turns out to bite in practice, the
   fix is either to restore a character-set rule or to let login accept either identifier.
 
-- **Risk**: a typo in the single password field creates an account nobody can log into, with no
-  reset flow to recover it.
-  **Mitigation**: none in Sprint 1. This is the direct cost of dropping `confirmPassword`, it
-  is recorded under Known Limitations, and it is the first thing worth fixing next sprint -
-  either a confirm field or a password reset flow.
-
 - **Risk**: a forgotten password means a permanently unreachable account.
-  **Mitigation**: accepted for Sprint 1 and listed under Known Limitations. Recovery needs
-  email sending, which is out of scope.
+  **Mitigation**: `confirmPassword` reduces typo-at-registration mistakes; password reset is
+  still out of scope for Sprint 1 and listed under Known Limitations. Recovery needs email
+  sending, which is out of scope.
 
 ### Process Risks
 
@@ -2095,8 +2103,9 @@ Read this before touching code in this sprint.
     taken", "Email already registered", "Invalid credentials", "Could not create account", "Could
     not sign in". Per field: "First name is required", "Last name is required", "Must be between 3
     and 32 characters", "Must be a valid email address", "Must be at least 8 characters", and for
-    login "Username is required" and "Password is required". Tests assert them exactly, and the
-    forms render them verbatim. Do not improve the wording without changing this PRD first.
+    the register form only "Confirm password is required" and "Passwords do not match"; for login
+    "Username is required" and "Password is required". Tests assert them exactly, and the forms
+    render them verbatim. Do not improve the wording without changing this PRD first.
 16. **Every value in `fields` is a string, not an array.** The array wrapping that `FieldError`
     needs happens in the form component.
 17. **Responses go through `toPublicUser`.** Never return a row, never spread one, never delete
@@ -2116,7 +2125,7 @@ Read this before touching code in this sprint.
 
 ## Current Status
 
-**Last Updated**: August 23, 2026
+**Last Updated**: August 25, 2026
 **Current Phase**: All five phases complete. Phase 5 awaiting Kusuma's final review.
 **Status**: SPRINT COMPLETE - register, login, logout, and the MCQ stub work end to end on the
 Workers runtime with real PBKDF2 hashing. 186 tests passing. Phases 1 to 4 are committed and
@@ -2141,7 +2150,7 @@ and this Cursor chat still needs exporting for submission.
 | Local D1 `aisprint-quizmaker-db` | migration applied; holds three rows from the Phase 5 runtime walk |
 | `src/lib/services/user-service.ts` | seven exports, the only `getCloudflareContext()` caller and the only SQL in the codebase |
 | `src/lib/services/user-service.test.ts` | 38 tests against a fake D1, two of them mutation-checked |
-| `src/lib/validation/auth.ts` | `registerSchema`, `loginSchema`, `toFieldErrors` - now imported by the forms too |
+| `src/lib/validation/auth.ts` | `registerSchema`, `registerFormSchema`, `loginSchema`, `toFieldErrors` - now imported by the forms too |
 | `src/lib/validation/auth.test.ts` | 37 tests, including every documented message and both casing rules |
 | `src/lib/password.ts` | real Web Crypto PBKDF2-SHA256 per OD3; the stub is gone |
 | `src/lib/password.test.ts` | 24 tests: format, salt, iteration handling, and nine malformed-input cases |
@@ -2213,6 +2222,14 @@ OD3 - Web Crypto PBKDF2-SHA256 at 100,000 iterations with a 16-byte salt in a si
 `password_hash` column using the `pbkdf2-sha256$...` format. No hashing library.
 
 **Open questions**: none. The username casing question is settled - see below.
+
+**Decisions taken after sprint completion (2026-08-25)**, by Kusuma:
+
+1. **`confirmPassword` is added to the register form as a client-only field.** The original
+   sprint cut it so the form posted exactly the API's five fields; the post-sprint change keeps
+   that API contract (`registerSchema` unchanged, stray `confirmPassword` still ignored if
+   sent) while adding `registerFormSchema` for the sixth input. Validation messages:
+   `Confirm password is required` and `Passwords do not match`.
 
 **Decisions taken at Phase 1 review (2026-08-23)**, both by Kusuma:
 

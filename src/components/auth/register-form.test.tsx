@@ -16,6 +16,7 @@ const VALID = {
   Username: "KusumaBS",
   Email: "kusuma@example.com",
   Password: "correct-horse-battery",
+  "Confirm password": "correct-horse-battery",
 };
 
 function jsonResponse(status: number, body: unknown) {
@@ -55,27 +56,29 @@ function submit(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("RegisterForm", () => {
-  it("renders all five fields and no others", () => {
+  it("renders all six fields and no others", () => {
     render(<RegisterForm />);
 
     for (const label of Object.keys(VALID)) {
       expect(screen.getByLabelText(label)).toBeTruthy();
     }
-    expect(screen.queryByLabelText(/confirm/i)).toBeNull();
-    expect(document.querySelectorAll("input")).toHaveLength(5);
+    expect(document.querySelectorAll("input")).toHaveLength(6);
   });
 
-  it("masks the password field and leaves the others as text", () => {
+  it("masks both password fields and leaves the others as text", () => {
     render(<RegisterForm />);
 
     expect(screen.getByLabelText("Password").getAttribute("type")).toBe(
+      "password",
+    );
+    expect(screen.getByLabelText("Confirm password").getAttribute("type")).toBe(
       "password",
     );
     expect(screen.getByLabelText("Email").getAttribute("type")).toBe("email");
     expect(screen.getByLabelText("Username").getAttribute("type")).toBe("text");
   });
 
-  it("posts all five fields to the register endpoint", async () => {
+  it("posts the five API fields to the register endpoint, not confirmPassword", async () => {
     const user = userEvent.setup();
     render(<RegisterForm />);
 
@@ -125,10 +128,37 @@ describe("RegisterForm", () => {
     const user = userEvent.setup();
     render(<RegisterForm />);
 
-    await fillForm(user, { Password: "short" });
+    await fillForm(user, {
+      Password: "short",
+      "Confirm password": "short",
+    });
     await submit(user);
 
     expect(await screen.findByText("Must be at least 8 characters")).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks mismatched passwords locally and never calls the API", async () => {
+    const user = userEvent.setup();
+    render(<RegisterForm />);
+
+    await fillForm(user, { "Confirm password": "different-password" });
+    await submit(user);
+
+    expect(await screen.findByText("Passwords do not match")).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks an empty confirm password locally", async () => {
+    const user = userEvent.setup();
+    render(<RegisterForm />);
+
+    await fillForm(user, { "Confirm password": "" });
+    await submit(user);
+
+    expect(
+      await screen.findByText("Confirm password is required"),
+    ).toBeTruthy();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
