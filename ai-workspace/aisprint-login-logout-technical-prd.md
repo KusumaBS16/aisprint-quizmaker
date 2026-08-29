@@ -859,11 +859,9 @@ return the documented status codes and exact message strings.
 **Tasks**:
 
 1. Add `zod`, approved in OD2: `npm install zod`.
-2. Write `src/lib/validation/auth.test.ts` first, covering all five register API fields: valid
+2. Write `src/lib/validation/auth.test.ts` first, covering all five register fields: valid
    input, each field missing, a malformed email, a username of 2 characters, a username of 33
    characters, a 7-character password, and the login schema's deliberate lack of any length rule.
-   After the post-sprint `confirmPassword` addition, extend coverage with `registerFormSchema`
-   tests for empty confirm, mismatch, and matching passwords.
    Cover the casing rules explicitly, since they differ per field and are easy to get wrong:
    `username` comes out trimmed with its casing intact (`"  Kusuma  "` becomes `"Kusuma"`, not
    `"kusuma"`), while `email` comes out trimmed *and* lowercased. Assert the exact message strings
@@ -2125,7 +2123,7 @@ Read this before touching code in this sprint.
 
 ## Current Status
 
-**Last Updated**: August 25, 2026
+**Last Updated**: August 23, 2026
 **Current Phase**: All five phases complete. Phase 5 awaiting Kusuma's final review.
 **Status**: SPRINT COMPLETE - register, login, logout, and the MCQ stub work end to end on the
 Workers runtime with real PBKDF2 hashing. 186 tests passing. Phases 1 to 4 are committed and
@@ -2222,14 +2220,6 @@ OD3 - Web Crypto PBKDF2-SHA256 at 100,000 iterations with a 16-byte salt in a si
 `password_hash` column using the `pbkdf2-sha256$...` format. No hashing library.
 
 **Open questions**: none. The username casing question is settled - see below.
-
-**Decisions taken after sprint completion (2026-08-25)**, by Kusuma:
-
-1. **`confirmPassword` is added to the register form as a client-only field.** The original
-   sprint cut it so the form posted exactly the API's five fields; the post-sprint change keeps
-   that API contract (`registerSchema` unchanged, stray `confirmPassword` still ignored if
-   sent) while adding `registerFormSchema` for the sixth input. Validation messages:
-   `Confirm password is required` and `Passwords do not match`.
 
 **Decisions taken at Phase 1 review (2026-08-23)**, both by Kusuma:
 
