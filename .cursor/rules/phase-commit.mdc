@@ -1,0 +1,50 @@
+---
+description: How an implementation phase ends - verify, report, wait for approval, then commit and push
+alwaysApply: true
+---
+
+# Phase Completion and Commit
+
+Work in this repository is organised into numbered implementation phases defined by the
+technical PRD in `ai-workspace/`. This rule governs how a phase ends. It applies to every
+phase of every sprint.
+
+## The gate
+
+A phase is not finished when the code is written. It is finished when the user has
+approved it. In order:
+
+1. **Run the tests.** `npm run test`.
+2. **Run the linter.** `npm run lint`.
+3. **Show the real output.** Paste what the commands actually printed - counts, failures,
+   warnings and all. Never summarise a run as passing without the output, and never
+   describe work as complete based on reading the code.
+4. **Report what changed**: the files touched, anything that behaved unexpectedly, and
+   anything deferred to a later phase.
+5. **Stop and wait.** Do not begin the next phase. Do not commit.
+6. **Only after the user explicitly approves**, commit and push.
+
+If the tests or the linter fail, fix them and return to step 1. Never weaken or delete a
+test to reach green - if a test looks wrong, say so and ask.
+
+## The commit
+
+Once approved:
+
+- One commit per phase, to the current feature branch, unless the user asks otherwise.
+- **Never commit or push to `main`.**
+- The PRD's phase status marker and its Current Status section are updated **in the same
+  commit** as that phase's code, so the document never describes a state the branch is not
+  in.
+- The commit message names the phase, for example
+  `Phase 2: MCQ service with atomic question and choice writes`.
+- Never `--no-verify`. Never `push --force`. No `commit --amend` on anything already
+  pushed.
+- Do not commit `.dev.vars` or any other gitignored local secret.
+
+## Scope within a phase
+
+Do only the current phase's tasks. Work belonging to a later phase gets noted in the
+report, not done early. If a phase cannot be completed as the PRD describes it, stop and
+raise it rather than diverging silently - then fix the PRD, so the document and the code
+stay in agreement.
