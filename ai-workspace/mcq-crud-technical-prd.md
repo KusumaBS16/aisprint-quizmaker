@@ -693,7 +693,7 @@ back. They are not a test of the `db.batch()` binding call itself, which only ex
 Workers runtime. Phase 5 exercises that path end to end; until then, the batch grouping is proven
 by the unit tests and the SQL is proven by these.
 
-### Phase 3: API Routes and Validation - PLANNED
+### Phase 3: API Routes and Validation - COMPLETED
 
 **Objective**: Six endpoints, each validating input and returning the agreed status codes and
 error shapes.
@@ -725,6 +725,41 @@ error shapes.
 - `src/app/api/mcq/[id]/attempts/route.ts` (POST)
 - A colocated `route.test.ts` beside each
 - The pasted route table from `npm run build`
+
+**Outcome** (August 30, 2026): 71 tests across the four new files, all written first and observed
+failing on unresolvable imports before any handler existed. Full suite 329 passed across 18 files.
+Lint 0 errors and the same one pre-existing `Badge` warning. `npx tsc --noEmit` clean **after a
+fix described below**.
+
+Three route files carry the six endpoints, since the App Router groups methods by path:
+`/api/mcq` holds GET and POST, `/api/mcq/[id]` holds GET, PUT, and DELETE, and
+`/api/mcq/[id]/attempts` holds POST.
+
+The build's route table lists exactly what was intended and nothing more:
+
+```
+├ ƒ /api/mcq
+├ ƒ /api/mcq/[id]
+├ ƒ /api/mcq/[id]/attempts
+```
+
+alongside the Sprint 1 routes and pages. **No colocated `*.test.ts` was picked up as a route**,
+confirming rather than assuming that only a file named exactly `route.ts` becomes a handler.
+
+**A real problem found by checking rather than assuming.** `npm run build` reported its
+TypeScript step clean, but `npx tsc --noEmit` reported **9 errors** in the new route tests -
+`TS18046: 'body' is of type 'unknown'` and `TS2571: Object is of type 'unknown'` - because
+`response.json()` returns `unknown` and the tests reached into `.fields` without narrowing. The
+build had not caught them: its typecheck covers the files in its own build graph, and test files
+are not in it. Fixed by narrowing once per file through a typed `errorBody(response)` helper
+rather than asserting inline. This is exactly the quiet pile-up the Phase 5 checklist exists to
+prevent, and it is why `tsc --noEmit` is listed there separately from `npm run build`.
+
+Trust boundary evidence, since it is the point of the design: a test posts
+`{ selectedChoiceId: "choice-lyon", isCorrect: true }` and asserts the response still reports
+incorrect, and a second asserts the handler forwards only two arguments to `recordAttempt`, so no
+correctness claim can reach the service. A third asserts `GET /api/mcq/[id]` contains neither
+`isCorrect` nor `is_correct` anywhere in its serialised body.
 
 ### Phase 4: User Interface - PLANNED
 
@@ -965,15 +1000,21 @@ unit test and the SQL behaviour by real `wrangler d1 execute --local` output.
 
 **API**
 
-- [ ] `GET /api/mcq` returns every question, unfiltered by creator
-- [ ] `POST /api/mcq` returns 201 and the created question with its choices
-- [ ] One choice is a 400; seven choices is a 400; an empty choice is a 400
-- [ ] Zero correct choices is a 400; two correct choices is a 400
-- [ ] Malformed JSON is a 400, not a 500
-- [ ] An unknown ID is a 404 on GET, PUT, DELETE, and the attempts route
-- [ ] `GET /api/mcq/[id]` returns no `isCorrect` field anywhere in the payload
-- [ ] A body claiming the wrong answer is correct still returns incorrect
-- [ ] A choice ID from another question returns 404 rather than being scored
+Verified in Phase 3 by route tests with the service mocked at the module boundary. Re-confirmed
+against the running Workers runtime in Phase 5.
+
+- [x] `GET /api/mcq` returns every question, unfiltered by creator
+- [x] `POST /api/mcq` returns 201 and the created question with its choices
+- [x] One choice is a 400; seven choices is a 400; an empty choice is a 400
+- [x] Zero correct choices is a 400; two correct choices is a 400
+- [x] Malformed JSON is a 400, not a 500
+- [x] An unknown ID is a 404 on GET, PUT, DELETE, and the attempts route
+- [x] `GET /api/mcq/[id]` returns no `isCorrect` field anywhere in the payload
+- [x] A body claiming the wrong answer is correct still returns incorrect
+- [x] A choice ID from another question returns 404 rather than being scored
+- [x] The attempts route returns an identical 404 for an unknown question and an unknown choice,
+      so ids cannot be probed
+- [x] A caller cannot set `id` or `createdBy` through the create body - Zod strips them
 
 **UI**
 
@@ -1002,8 +1043,8 @@ unit test and the SQL behaviour by real `wrangler d1 execute --local` output.
       `package.json`, with no manual `node_modules` edits, junctions, or copied folders
 - [ ] Nothing was deployed and the remote database was untouched **for the whole of Phases 1
       through 5**
-- [ ] The build's route table lists exactly the six intended routes, and no `*.test.ts` file was
-      picked up as a route
+- [x] The build's route table lists exactly the six intended routes, and no `*.test.ts` file was
+      picked up as a route - verified in Phase 3
 
 **Deployment close-out** - marked only after Phase 5 is approved
 
@@ -1273,6 +1314,32 @@ the directory. Kill that process, not just the npm wrapper.
 `.wrangler/tmp/`. `.wrangler/**` is in the ESLint ignores; if the errors appear, check that ignore
 is intact.
 
+### Resolved (Phase 3): `npm run build` passes TypeScript but `npx tsc --noEmit` reports errors
+
+**Problem**: The production build reported its TypeScript step finished cleanly, while
+`npx tsc --noEmit` reported 9 errors - `TS18046: 'body' is of type 'unknown'` and `TS2571: Object
+is of type 'unknown'` - all in colocated `route.test.ts` files.
+
+**Cause**: Next's build typechecks the files in its own build graph. Test files are not imported
+by the application, so they are never in it. `tsc --noEmit` reads `tsconfig.json` and checks
+everything, tests included. The two are not interchangeable, and the build is the weaker check.
+
+**Solution**: Narrow `response.json()` once per test file with a typed helper rather than
+asserting inline:
+
+```ts
+type ErrorBody = { error?: string; fields?: Record<string, string> };
+
+async function errorBody(response: Response): Promise<ErrorBody> {
+  return (await response.json()) as ErrorBody;
+}
+```
+
+**Wider lesson**: run `npx tsc --noEmit` at every phase gate, not only at Phase 5. A green build
+and a green test run together still let type errors accumulate in test files.
+
+**Code Reference**: `src/app/api/mcq/route.test.ts:48-55`
+
 ### Anticipated (to be confirmed or removed in Phase 5)
 
 **`db.batch()` and the test fake** - Sprint 1's fake D1 exposes only `prepare`, `bind`, and
@@ -1328,24 +1395,28 @@ message-matching treatment.
 
 ## Current Status
 
-**Last Updated**: August 30, 2026 (revision 4 - Phase 2 complete)
-**Current Phase**: Phase 2 complete, awaiting review. Phase 3 not started.
+**Last Updated**: August 30, 2026 (revision 5 - Phase 3 complete)
+**Current Phase**: Phase 3 complete, awaiting review. Phase 4 not started.
 **Status**: AWAITING REVIEW
 **Live URL**: none yet - recorded here by Deployment Close-Out task 9
 
-**What exists**: The branch `feature/mcq-crud`, cut from `main` at `215b615`. Committed: the
-planning commit (`65aaaee`) and Phase 1 (`dc2fa74`). Uncommitted on top of that:
-`src/lib/services/mcq-service.ts` and its test. The migration is applied to the **local** database
-only. No routes, no UI, no shadcn components added, no dependencies added, nothing deployed,
-remote database untouched.
+**What exists**: The branch `feature/mcq-crud`, cut from `main` at `215b615`. Committed: planning
+(`65aaaee`), Phase 1 (`dc2fa74`), Phase 2 (`08bc57e`). Uncommitted on top of that:
+`src/lib/validation/mcq.ts` and the three route files, each with a colocated test. The migration
+is applied to the **local** database only. No UI yet, no shadcn components added, no dependencies
+added, nothing deployed, remote database untouched.
 
 **Phase 1 result**: 25 migration assertions pass. All six Schema acceptance criteria ticked, plus
 a seventh added for foreign-key enforcement.
 
-**Phase 2 result**: 40 service tests pass; full suite 258 passed across 14 files; `tsc --noEmit`
-clean; lint 0 errors and 1 pre-existing warning (`Badge` unused in `src/app/mcq/page.tsx`, which
-Phase 4 rewrites). All eight Service acceptance criteria ticked. No API, UI, Process, or
-Deployment criteria are ticked - later phases can still break those.
+**Phase 2 result**: 40 service tests pass. All eight Service acceptance criteria ticked.
+
+**Phase 3 result**: 71 validation and route tests pass; full suite 329 passed across 18 files;
+`tsc --noEmit` clean after fixing 9 type errors the build had not caught; lint 0 errors and 1
+pre-existing warning (`Badge` unused in `src/app/mcq/page.tsx`, which Phase 4 rewrites). Build
+route table confirmed to contain only the intended routes. All API acceptance criteria ticked,
+plus the route-table Process criterion. No UI or Deployment criteria are ticked, and the
+remaining Process criteria stay open because later phases can still break them.
 
 **Revision 2 changed**: deployment moved out of Out of Scope into a required Deployment Close-Out
 after Phase 5, with Out of Scope, Acceptance Criteria, Known Limitations, Success Metrics, and
