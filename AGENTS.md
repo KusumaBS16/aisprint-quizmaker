@@ -23,6 +23,12 @@ know who is calling, so **they are always written as NULL** and `/mcq` lists eve
 question rather than filtering by teacher. The columns exist so a future session layer
 fills them in rather than migrating. Do not invent a caller to populate them.
 
+The app is deployed at **https://aisprint-quizmaker.kusuma-bs.workers.dev**, backed by the
+remote `aisprint-quizmaker-db`. Because there are no sessions, everything on that URL is
+reachable by anyone - it is a graded demonstration, not somewhere to put real content.
+That deploy was a one-off with explicit permission; the "do not deploy" rule below still
+stands and a later sprint needs its own authorization.
+
 There are two technical PRDs in `ai-workspace/`, one per sprint, and they are the source
 of truth for what was built, what was deliberately left out, and why. Read the relevant
 one before changing the auth flow or the MCQ feature.
