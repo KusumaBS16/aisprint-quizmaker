@@ -617,7 +617,7 @@ Two notes for later phases:
    Phase 2 task 6, but it is `d1 execute` behaviour and is **not** evidence about `db.batch()`.
    Phase 2 still has to prove the batch rollback on its own terms.
 
-### Phase 2: MCQ Service - PLANNED
+### Phase 2: MCQ Service - COMPLETED
 
 **Objective**: Every database operation this feature needs, behind one tested module.
 
@@ -651,6 +651,47 @@ Two notes for later phases:
 - `src/lib/services/mcq-service.test.ts`
 - Pasted `wrangler d1 execute --local` output evidencing task 6, both paths, plus the empty-table
   confirmation
+
+**Outcome** (August 30, 2026): 40 service tests written first and run before the module existed,
+failing with `Failed to resolve import "@/lib/services/mcq-service"`. After implementation all 40
+pass. Full suite 258 passed across 14 files, `npx tsc --noEmit` clean, lint 0 errors and the same
+one pre-existing `Badge` warning.
+
+Seven exports, one more than the six the brief named: `findQuestionForEditing` is the seventh, and
+it is the server-only path that carries the answer key for the edit form.
+
+Verified against the real local database with throwaway rows, all cleaned up:
+
+- **The SQL is accepted by D1**, which the mocked suite cannot show. Question insert with an
+  application-supplied id, three choice inserts, the choice read-back, the attempt lookup and
+  insert, the update's delete-and-reinsert, and the cascade delete were all run as written.
+- **Choice ordering is genuinely by position, not by id.** The three SQLite-generated choice ids
+  sorted `2acb…`, `6537…`, `846c…`, so an accidental id ordering would have returned Lyon, Nice,
+  Paris. `ORDER BY position, id` returned Paris, Lyon, Nice, with positions 0, 1, 2.
+- **A failed write leaves no question behind.** A question plus a good choice plus a choice with
+  `is_correct = 7` was rejected with `CHECK constraint failed: is_correct IN (0, 1)`, and the
+  question row did not survive - `SELECT id, name FROM mcq_questions` afterwards showed only the
+  unrelated probe.
+- **Update replaces rather than accumulates**: choices went 3 to 2, not 3 to 5.
+- **Cascade delete confirmed again at service scale**: 1 question, 2 choices, 1 attempt, then one
+  `DELETE ... RETURNING id`, left `{"questions": 0, "choices": 0, "attempts": 0}`. `RETURNING`
+  returned the deleted id, which is what `deleteQuestion` keys its boolean on.
+- **`user_id` is written as null** and came back null from `RETURNING`.
+- All three tables empty afterwards; Phase 3 starts clean.
+
+Invariants checked by search rather than assertion: `getCloudflareContext` appears only in the two
+service modules and their tests, `.first(` appears nowhere in `src/`, and the three `mcq_` table
+names appear only in `mcq-service.ts` and its test.
+
+**Known Limitation 8 was observed happening, not just predicted.** Replacing a question's choices
+on update cascaded its existing attempt away: the count went from 1 to 0 with no explicit delete
+of the attempt. The limitation is written correctly; this is confirmation, not a surprise.
+
+**Caveat on what this does and does not prove.** These checks ran through
+`wrangler d1 execute`, which is the same D1 engine and does roll a failed multi-statement command
+back. They are not a test of the `db.batch()` binding call itself, which only exists on the
+Workers runtime. Phase 5 exercises that path end to end; until then, the batch grouping is proven
+by the unit tests and the SQL is proven by these.
 
 ### Phase 3: API Routes and Validation - PLANNED
 
@@ -907,14 +948,20 @@ All six verified in Phase 1 against real `wrangler d1 execute --local` output.
 
 **Service**
 
-- [ ] `createQuestion` writes the question and all choices in a single `db.batch()` call
-- [ ] A failed batch leaves no question row behind
-- [ ] `updateQuestion` replaces choices rather than appending to them
-- [ ] Choices are always returned in `position` order
-- [ ] `recordAttempt` returns `undefined` for a choice belonging to another question
-- [ ] `recordAttempt` writes `user_id` as `NULL`
-- [ ] No `.first()` anywhere in the service
-- [ ] No SQL outside `mcq-service.ts` for this feature
+Verified in Phase 2. Marked where the evidence came from, since the batch grouping is proven by
+unit test and the SQL behaviour by real `wrangler d1 execute --local` output.
+
+- [x] `createQuestion` writes the question and all choices in a single `db.batch()` call - one
+      batch of 1 + N statements, with no insert issued outside it
+- [x] A failed batch leaves no question row behind - `CHECK` violation on a sibling insert, and
+      the question did not survive
+- [x] `updateQuestion` replaces choices rather than appending to them - 3 choices became 2
+- [x] Choices are always returned in `position` order - proven against ids that sort differently
+- [x] `recordAttempt` returns `undefined` for a choice belonging to another question, and writes
+      nothing in that case
+- [x] `recordAttempt` writes `user_id` as `NULL`
+- [x] No `.first()` anywhere in the service
+- [x] No SQL outside `mcq-service.ts` for this feature
 
 **API**
 
@@ -980,7 +1027,7 @@ All six verified in Phase 1 against real `wrangler d1 execute --local` output.
 | Referential integrity | 0 orphaned choice or attempt rows after a delete | `wrangler d1 execute --local` after Phase 1 task 7 |
 | Scope discipline | 0 items from the Not Building list implemented | Review of this PRD against the diff at Phase 5 |
 | Test coverage of failure paths | Every 400 and 404 in the API section has a test | Count against the endpoint list |
-| Batch atomicity | 0 orphaned question rows after a deliberately failed batch | Phase 2 task 6, against the real local database |
+| Batch atomicity | 0 orphaned question rows after a deliberately failed batch | Phase 2 task 6, against the real local database - met: 0 orphans |
 | Deployment | A live URL serving the full journey | Close-out task 7, walked by hand against the deployed Worker |
 | Remote schema parity | Remote `PRAGMA table_info` matches local for all four tables | Close-out task 5 |
 
@@ -1281,22 +1328,24 @@ message-matching treatment.
 
 ## Current Status
 
-**Last Updated**: August 29, 2026 (revision 3 - Phase 1 complete)
-**Current Phase**: Phase 1 complete, awaiting review. Phase 2 not started.
+**Last Updated**: August 30, 2026 (revision 4 - Phase 2 complete)
+**Current Phase**: Phase 2 complete, awaiting review. Phase 3 not started.
 **Status**: AWAITING REVIEW
 **Live URL**: none yet - recorded here by Deployment Close-Out task 9
 
-**What exists**: The branch `feature/mcq-crud`, cut from `main` at `215b615`. This PRD and
-`.cursor/rules/phase-commit.mdc`, committed as the planning commit. Uncommitted on top of that:
-`migrations/0002_create_mcq_tables.sql` and its test, applied to the **local** database only. No
-service, no routes, no UI, no shadcn components added, no dependencies added, nothing deployed,
+**What exists**: The branch `feature/mcq-crud`, cut from `main` at `215b615`. Committed: the
+planning commit (`65aaaee`) and Phase 1 (`dc2fa74`). Uncommitted on top of that:
+`src/lib/services/mcq-service.ts` and its test. The migration is applied to the **local** database
+only. No routes, no UI, no shadcn components added, no dependencies added, nothing deployed,
 remote database untouched.
 
-**Phase 1 result**: 25 migration assertions pass; full suite 218 passed across 13 files; lint
-reports 0 errors and 1 pre-existing warning (`Badge` unused in `src/app/mcq/page.tsx`, which
-Phase 4 rewrites). All six Schema acceptance criteria ticked, plus a seventh added for foreign-key
-enforcement. No Service, API, UI, Process, or Deployment criteria are ticked - later phases can
-still break those.
+**Phase 1 result**: 25 migration assertions pass. All six Schema acceptance criteria ticked, plus
+a seventh added for foreign-key enforcement.
+
+**Phase 2 result**: 40 service tests pass; full suite 258 passed across 14 files; `tsc --noEmit`
+clean; lint 0 errors and 1 pre-existing warning (`Badge` unused in `src/app/mcq/page.tsx`, which
+Phase 4 rewrites). All eight Service acceptance criteria ticked. No API, UI, Process, or
+Deployment criteria are ticked - later phases can still break those.
 
 **Revision 2 changed**: deployment moved out of Out of Scope into a required Deployment Close-Out
 after Phase 5, with Out of Scope, Acceptance Criteria, Known Limitations, Success Metrics, and
