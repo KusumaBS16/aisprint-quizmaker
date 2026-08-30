@@ -558,7 +558,7 @@ committed before Kusuma approves it. This is now also encoded in
 Phases 1 through 5 are local-only. Deployment happens once, at the end, after Phase 5 has been
 reviewed.
 
-### Phase 1: Schema and Migration - PLANNED
+### Phase 1: Schema and Migration - COMPLETED
 
 **Objective**: The three tables exist in the local D1 database with the right columns,
 constraints, cascades, and indexes.
@@ -583,6 +583,39 @@ constraints, cascades, and indexes.
 - `migrations/0002_create_mcq_tables.sql`
 - `migrations/0002_create_mcq_tables.test.ts`
 - Pasted `wrangler d1 execute --local` output evidencing tasks 6 and 7
+
+**Outcome** (August 29, 2026): Both files written, migration applied locally, all seven tasks
+done. The test was written first and run against the empty migration, where 23 of 25 assertions
+failed with `No CREATE TABLE mcq_questions (...) statement found`; after the SQL was written all
+25 passed. Full suite 218 passed across 13 files. Lint clean apart from one pre-existing warning.
+
+Verified against the real local database, not just the SQL text:
+
+- `PRAGMA table_info` on all three tables returns exactly the PRD's columns, in order, with
+  `created_by` and `user_id` the only nullable non-generated columns.
+- `pragma_foreign_key_list` shows **five** foreign keys with the intended `on_delete` actions:
+  `SET NULL` for both user references, `CASCADE` for `mcq_choices.question_id`,
+  `mcq_attempts.question_id`, and `mcq_attempts.selected_choice_id`.
+- `pragma_index_list` shows all four named indexes, each `"unique": 0`, alongside one implicit
+  primary-key autoindex per table.
+- Cascade proven by execution: a question with 2 choices and 1 attempt, then one
+  `DELETE FROM mcq_questions`, left all three tables at zero rows.
+- `CHECK` proven by execution: `is_correct = 2` was rejected with
+  `CHECK constraint failed: is_correct IN (0, 1)`.
+- Foreign keys proven to be **enforced**, not merely declared: a choice referencing a
+  non-existent question was rejected with `FOREIGN KEY constraint failed`. This is what makes the
+  cascade meaningful and it was worth confirming rather than assuming.
+- All three tables left empty, so Phase 2 starts from a known state.
+
+Two notes for later phases:
+
+1. **Task 2 above says "all three `ON DELETE` clauses"; there are actually five.** The test covers
+   all five. The task wording is left exactly as written rather than quietly corrected - see Notes
+   for AI Agents item 12 - pending Kusuma's decision on whether to fix it.
+2. **A multi-statement `wrangler d1 execute` rolled back entirely when a later statement failed**:
+   the question inserted before the rejected `CHECK` did not survive. That is encouraging for
+   Phase 2 task 6, but it is `d1 execute` behaviour and is **not** evidence about `db.batch()`.
+   Phase 2 still has to prove the batch rollback on its own terms.
 
 ### Phase 2: MCQ Service - PLANNED
 
@@ -860,12 +893,17 @@ the evidence.
 
 **Schema**
 
-- [ ] `mcq_questions`, `mcq_choices`, and `mcq_attempts` exist with exactly the columns above
-- [ ] `created_by` and `user_id` are nullable; every other non-defaulted column is `NOT NULL`
-- [ ] Deleting a question deletes its choices
-- [ ] Deleting a question deletes its attempts
-- [ ] All four named indexes are present in `PRAGMA index_list`
-- [ ] `is_correct` rejects a value other than `0` or `1`
+All six verified in Phase 1 against real `wrangler d1 execute --local` output.
+
+- [x] `mcq_questions`, `mcq_choices`, and `mcq_attempts` exist with exactly the columns above
+- [x] `created_by` and `user_id` are nullable; every other non-defaulted column is `NOT NULL`
+- [x] Deleting a question deletes its choices
+- [x] Deleting a question deletes its attempts
+- [x] All four named indexes are present in `PRAGMA index_list`
+- [x] `is_correct` rejects a value other than `0` or `1`
+- [x] Foreign keys are enforced, not merely declared - an orphan choice is rejected with
+      `FOREIGN KEY constraint failed` (added in Phase 1; the cascades above mean nothing without
+      it)
 
 **Service**
 
@@ -1243,14 +1281,22 @@ message-matching treatment.
 
 ## Current Status
 
-**Last Updated**: August 29, 2026 (revision 2)
-**Current Phase**: Planning complete - no phase started
-**Status**: PLANNING
+**Last Updated**: August 29, 2026 (revision 3 - Phase 1 complete)
+**Current Phase**: Phase 1 complete, awaiting review. Phase 2 not started.
+**Status**: AWAITING REVIEW
 **Live URL**: none yet - recorded here by Deployment Close-Out task 9
 
 **What exists**: The branch `feature/mcq-crud`, cut from `main` at `215b615`. This PRD and
-`.cursor/rules/phase-commit.mdc`, committed together as the planning commit. No feature code, no
-migration, no shadcn components added, nothing deployed.
+`.cursor/rules/phase-commit.mdc`, committed as the planning commit. Uncommitted on top of that:
+`migrations/0002_create_mcq_tables.sql` and its test, applied to the **local** database only. No
+service, no routes, no UI, no shadcn components added, no dependencies added, nothing deployed,
+remote database untouched.
+
+**Phase 1 result**: 25 migration assertions pass; full suite 218 passed across 13 files; lint
+reports 0 errors and 1 pre-existing warning (`Badge` unused in `src/app/mcq/page.tsx`, which
+Phase 4 rewrites). All six Schema acceptance criteria ticked, plus a seventh added for foreign-key
+enforcement. No Service, API, UI, Process, or Deployment criteria are ticked - later phases can
+still break those.
 
 **Revision 2 changed**: deployment moved out of Out of Scope into a required Deployment Close-Out
 after Phase 5, with Out of Scope, Acceptance Criteria, Known Limitations, Success Metrics, and
