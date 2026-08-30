@@ -761,7 +761,7 @@ incorrect, and a second asserts the handler forwards only two arguments to `reco
 correctness claim can reach the service. A third asserts `GET /api/mcq/[id]` contains neither
 `isCorrect` nor `is_correct` anywhere in its serialised body.
 
-### Phase 4: User Interface - PLANNED
+### Phase 4: User Interface - COMPLETED
 
 **Objective**: The four pages, working against the real API.
 
@@ -785,6 +785,52 @@ correctness claim can reach the service. A third asserts `GET /api/mcq/[id]` con
 - The four components, `mcq-client.ts`, and colocated tests
 - `src/app/mcq/page.tsx` rewritten, plus the three new pages
 - The list of shadcn components actually added
+
+**Outcome** (August 30, 2026): 56 component tests across four new files, written first and
+observed failing on unresolvable imports. Full suite 385 passed across 22 files. Lint clean,
+`npx tsc --noEmit` clean, `npm run build` clean, and the route table now lists `/mcq`,
+`/mcq/[id]/edit`, `/mcq/[id]/preview`, and `/mcq/new` and nothing else.
+
+**shadcn components added, all four and only those four**: `dropdown-menu`, `textarea`,
+`alert-dialog`, `radio-group`. No package was installed and no dependency changed.
+
+Five components rather than the four planned, because the table itself needed to be testable:
+`questions-table.tsx` was split out of the page so that its columns, empty state, and create
+control could be asserted directly. The pages stayed Server Components, and a new
+`src/app/mcq/layout.tsx` holds the header so the logout control is declared once, in a bar of its
+own, with page content starting below the border.
+
+**Two Base UI behaviours were found by probing rather than by assuming**, both written up in the
+Troubleshooting Guide: its menus do not open under jsdom, and wrapping a `Link` in `Button` either
+warns or relabels the link as a button.
+
+**A real browser walkthrough, not an inspection.** Chrome was driven headless over the DevTools
+protocol using Node's built-in `WebSocket`, with `Input.dispatchMouseEvent` producing genuine
+mouse events, so the pointer-driven paths that jsdom cannot reach were exercised for real. The
+whole journey ran end to end: create with three choices, save, open the dots menu, edit, add a
+fourth choice, save, preview, answer wrong, try again, answer right, open the delete dialog,
+cancel it, reopen it, confirm. Observed along the way: the new form arrives with exactly two
+choice rows and both remove buttons disabled; marking choice 1 correct leaves the other two
+false; the menu holds exactly Edit, Preview, Delete with the first two carrying the right hrefs;
+the edit form arrives prefilled with `Paris, Lyon, Nice` and the correct mark on the first;
+preview lists all four choices with Submit disabled until one is picked; the wrong answer
+returned **Incorrect** and the right one **Correct**; cancelling the dialog left the row in
+place; confirming it emptied the table. **The string "correct" appears zero times in the preview
+page's rendered HTML**, so the answer key is not merely hidden but absent. The browser console
+was clean on `/mcq` and `/mcq/new` at the end.
+
+Attempts were confirmed in local D1 during the same pass: three rows, `user_id` null on all
+three, `is_correct` 0, 1, 0 - the third being a forged body claiming a wrong choice was right,
+recorded as wrong. Deleting the question took 1 question, 4 choices, and 3 attempts to 0, 0, 0.
+
+Pages that read D1 carry `export const dynamic = "force-dynamic"`, added so nothing is
+prerendered at build time; the route table agrees, marking those three dynamic and `/mcq/new`
+static. This was a precaution rather than a fix - the build was never observed failing without
+it.
+
+Tests use plain Vitest matchers and query by role and accessible name, matching the Sprint 1
+component tests. `@testing-library/jest-dom` was deliberately not installed: adding a dependency
+to write `toBeDisabled()` instead of reading `.disabled` is not a trade this sprint needs.
 
 ### Phase 5: Workers Runtime Verification and Documentation - PLANNED
 
@@ -882,6 +928,8 @@ worse than an unapplied one.
 | `src/components/mcq/question-actions.tsx` | Three-dots dropdown |
 | `src/components/mcq/delete-question-dialog.tsx` | Confirmation before delete |
 | `src/components/mcq/preview-form.tsx` | Radio group, submit, verdict |
+| `src/components/mcq/questions-table.tsx` | The table and the create control, split out of the page so it can be tested |
+| `src/app/mcq/layout.tsx` | Header and page shell; the only place the logout control is declared |
 | `src/app/mcq/page.tsx` | The table, a Server Component |
 | `src/app/mcq/new/page.tsx` | Create |
 | `src/app/mcq/[id]/edit/page.tsx` | Edit |
@@ -1018,27 +1066,30 @@ against the running Workers runtime in Phase 5.
 
 **UI**
 
-- [ ] `/mcq` lists all questions with name, question text, and an actions column
-- [ ] The actions trigger is the three-vertical-dots icon and has an accessible name
-- [ ] The dropdown offers exactly Edit, Preview, and Delete
-- [ ] Delete shows a confirmation dialog, and cancelling it deletes nothing
-- [ ] Create and edit render the same form component
-- [ ] A new question starts with two empty choice rows
-- [ ] Add choice is disabled at six rows; remove is disabled at two
-- [ ] Marking a choice correct unmarks the previously marked one
-- [ ] Save and Cancel are side by side, equal width, and neither overflows the viewport
-- [ ] Cancel returns to `/mcq` without writing
-- [ ] Preview renders the choices as radio options and cannot submit with none selected
-- [ ] Preview reports correct for the right answer and incorrect for a wrong one
-- [ ] The correct answer does not appear in the preview page source or its network responses
-- [ ] Every attempt is written to `mcq_attempts`
+Verified in Phase 4 by component tests and by a real browser walkthrough driven over the Chrome
+DevTools protocol. Re-confirmed on the Workers runtime in Phase 5.
+
+- [x] `/mcq` lists all questions with name, question text, and an actions column
+- [x] The actions trigger is the three-vertical-dots icon and has an accessible name
+- [x] The dropdown offers exactly Edit, Preview, and Delete
+- [x] Delete shows a confirmation dialog, and cancelling it deletes nothing
+- [x] Create and edit render the same form component
+- [x] A new question starts with two empty choice rows
+- [x] Add choice is disabled at six rows; remove is disabled at two
+- [x] Marking a choice correct unmarks the previously marked one
+- [x] Save and Cancel are side by side, equal width, and neither overflows the viewport
+- [x] Cancel returns to `/mcq` without writing
+- [x] Preview renders the choices as radio options and cannot submit with none selected
+- [x] Preview reports correct for the right answer and incorrect for a wrong one
+- [x] The correct answer does not appear in the preview page source or its network responses
+- [x] Every attempt is written to `mcq_attempts`
 
 **Process**
 
 - [ ] Tests were written before implementation in every phase and observed failing first
 - [ ] `npm run test`, `npm run lint`, `npx tsc --noEmit`, and `npm run build` all pass
 - [ ] The full journey works under `npm run preview` on the Workers runtime
-- [ ] Only the four named shadcn components were added; no other dependency
+- [x] Only the four named shadcn components were added; no other dependency - verified in Phase 4
 - [ ] Any package that did prove necessary was installed with a real `npm install` and appears in
       `package.json`, with no manual `node_modules` edits, junctions, or copied folders
 - [ ] Nothing was deployed and the remote database was untouched **for the whole of Phases 1
@@ -1340,6 +1391,45 @@ and a green test run together still let type errors accumulate in test files.
 
 **Code Reference**: `src/app/api/mcq/route.test.ts:48-55`
 
+### Resolved (Phase 4): Base UI menus do not open under jsdom
+
+**Symptom**: `userEvent.click()` on the dropdown trigger left `aria-expanded="false"` and rendered
+no menu items, so every test of the actions menu failed at the first assertion.
+
+**Cause**: Base UI's menu opens from `pointerdown`. jsdom reports `PointerEvent` as defined but
+does not implement `Element.prototype.hasPointerCapture` or `scrollIntoView`, and polyfilling
+those did not help - a click still did not open the menu. This was established by a throwaway
+probe that rendered each primitive and dumped its DOM, rather than by guessing.
+
+**Resolution**: the tests focus the trigger and press Enter, which opens the menu reliably. That
+is a real path a teacher can take, and the assertions about the menu's contents are unaffected by
+how it was opened. The mouse path is covered instead by the browser walkthrough, where
+`Input.dispatchMouseEvent` produces genuine pointer events. The reason is recorded in a comment
+at the top of `question-actions.test.tsx` so nobody later "fixes" the keyboard interaction back
+into a click and watches it fail.
+
+**Worth knowing for Phase 5 and beyond**: the same probe showed Base UI renders a radio as a
+`span` with `role="radio"` and `aria-checked`, plus a hidden native input, so checkedness is read
+from the attribute rather than from `.checked`. The alert dialog does expose `role="alertdialog"`
+and works under jsdom without help.
+
+### Resolved (Phase 4): `Button` wrapping a `Link` either warns or lies about its role
+
+**Symptom**: `<Button render={<Link href="/mcq/new" />}>` printed a console error on every render
+of `/mcq`: *"A component that acts as a button expected a native `<button>` because the
+`nativeButton` prop is true."* The Next.js dev overlay showed it as "1 Issue".
+
+**What the obvious fix did**: setting `nativeButton={false}`, as the message suggests, silenced
+the warning but made Base UI put `role="button"` on the anchor. Three tests querying
+`getByRole("link", { name: /create question/i })` went red, and rightly so - the control
+navigates, so announcing it as a button is worse than the warning was.
+
+**Resolution**: drop `Button` for this control and style the anchor directly with
+`buttonVariants()`. It looks identical, keeps the link role, and the console is clean.
+
+**Wider lesson**: this only surfaced because the browser console was read during the walkthrough.
+The tests passed throughout, and the build never mentioned it.
+
 ### Anticipated (to be confirmed or removed in Phase 5)
 
 **`db.batch()` and the test fake** - Sprint 1's fake D1 exposes only `prepare`, `bind`, and
@@ -1396,15 +1486,17 @@ message-matching treatment.
 ## Current Status
 
 **Last Updated**: August 30, 2026 (revision 5 - Phase 3 complete)
-**Current Phase**: Phase 3 complete, awaiting review. Phase 4 not started.
+**Current Phase**: Phase 4 complete, awaiting review. Phase 5 not started.
 **Status**: AWAITING REVIEW
 **Live URL**: none yet - recorded here by Deployment Close-Out task 9
 
 **What exists**: The branch `feature/mcq-crud`, cut from `main` at `215b615`. Committed: planning
-(`65aaaee`), Phase 1 (`dc2fa74`), Phase 2 (`08bc57e`). Uncommitted on top of that:
-`src/lib/validation/mcq.ts` and the three route files, each with a colocated test. The migration
-is applied to the **local** database only. No UI yet, no shadcn components added, no dependencies
-added, nothing deployed, remote database untouched.
+(`65aaaee`), Phase 1 (`dc2fa74`), Phase 2 (`08bc57e`), Phase 3 (`d1e1e71`). Uncommitted on top of
+that: five components under `src/components/mcq/` with four colocated test files,
+`src/lib/mcq-client.ts`, four shadcn components under `src/components/ui/`, a rewritten
+`src/app/mcq/page.tsx`, a new `src/app/mcq/layout.tsx`, and the three new pages. The migration is
+applied to the **local** database only. No dependencies added, nothing deployed, remote database
+untouched.
 
 **Phase 1 result**: 25 migration assertions pass. All six Schema acceptance criteria ticked, plus
 a seventh added for foreign-key enforcement.
@@ -1415,8 +1507,15 @@ a seventh added for foreign-key enforcement.
 `tsc --noEmit` clean after fixing 9 type errors the build had not caught; lint 0 errors and 1
 pre-existing warning (`Badge` unused in `src/app/mcq/page.tsx`, which Phase 4 rewrites). Build
 route table confirmed to contain only the intended routes. All API acceptance criteria ticked,
-plus the route-table Process criterion. No UI or Deployment criteria are ticked, and the
-remaining Process criteria stay open because later phases can still break them.
+plus the route-table Process criterion.
+
+**Phase 4 result**: 56 component tests pass; full suite 385 passed across 22 files; lint,
+`tsc --noEmit`, and `build` all clean, and the `Badge` warning is gone with the placeholder page
+that carried it. Four shadcn components added and no dependency. The full journey was walked in a
+real headless Chrome over the DevTools protocol, and every UI acceptance criterion is ticked
+against what was observed there rather than by reading the code. Two Base UI problems were found
+and written into the Troubleshooting Guide. The Deployment criteria stay open, as do the
+remaining Process criteria, because Phase 5 can still break them.
 
 **Revision 2 changed**: deployment moved out of Out of Scope into a required Deployment Close-Out
 after Phase 5, with Out of Scope, Acceptance Criteria, Known Limitations, Success Metrics, and
@@ -1425,5 +1524,7 @@ a build route-table check added as Phase 3 task 6; toast and animation libraries
 and soft delete added to Not Building; and two working habits - proper `npm install` and no silent
 post-phase edits - written into Notes for AI Agents.
 
-**Next Steps**: Kusuma reviews this revision. On "go Phase 1", begin with the migration test.
-Phase 1 does not start in the same breath as planning.
+**Next Steps**: Kusuma reviews Phase 4. On approval, commit and push it, then begin Phase 5:
+the four checks with real output, the full journey under `npm run preview` on the Workers
+runtime, the D1 and answer-key confirmations, and the `AGENTS.md` update. Phase 5 is still
+local-only; deployment is the separate close-out after Phase 5 is approved.

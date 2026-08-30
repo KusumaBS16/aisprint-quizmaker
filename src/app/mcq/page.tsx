@@ -1,36 +1,32 @@
 import type { Metadata } from "next";
 
-import { LogoutButton } from "@/components/auth/logout-button";
-import { Badge } from "@/components/ui/badge";
+import { QuestionsTable } from "@/components/mcq/questions-table";
+import { listQuestions } from "@/lib/services/mcq-service";
 
 export const metadata: Metadata = {
-  title: "Quiz - QuizMaker",
+  title: "Questions - QuizMaker",
 };
 
-export default function McqPage() {
-  return (
-    <div className="min-h-screen bg-background">
-      <header className="flex items-center justify-between border-b px-6 py-4">
-        <div className="flex items-center gap-3">
-          {/* <span className="font-semibold">QuizMaker</span> */}
-          {/* <Badge variant="secondary">Placeholder</Badge> */}
-        </div>
-        <LogoutButton />
-      </header>
+// The page reads D1 on every request, so there is nothing to prerender at build time.
+export const dynamic = "force-dynamic";
 
-      <main className="mx-auto flex max-w-2xl flex-col gap-6 p-6">
-        <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-          <p className="font-medium text-foreground">
-            This page is a placeholder.
-          </p>
-          <p className="mt-1">
-            Quiz questions will appear here once quiz storage is implemented.
-            Nothing is scored yet, and no answers are saved. This page is also
-            reachable without logging in, because Sprint 1 has no session
-            management — that is expected here, not a bug.
-          </p>
-        </div>
-      </main>
-    </div>
+export default async function McqPage() {
+  // A Server Component calling the service directly. The API routes exist for the browser;
+  // going back out over HTTP from the server to reach the same function would only add a
+  // round trip. Either way, D1 is reached through the service and nowhere else.
+  const questions = await listQuestions();
+
+  return (
+    <>
+      <div className="flex flex-col gap-1">
+        <h1 className="text-2xl font-semibold">Multiple-choice questions</h1>
+        <p className="text-sm text-muted-foreground">
+          Every question in the database. Questions are not filtered by teacher,
+          because there is no session layer yet.
+        </p>
+      </div>
+
+      <QuestionsTable questions={questions} />
+    </>
   );
 }
