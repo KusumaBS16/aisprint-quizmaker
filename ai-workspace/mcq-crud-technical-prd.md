@@ -832,7 +832,7 @@ Tests use plain Vitest matchers and query by role and accessible name, matching 
 component tests. `@testing-library/jest-dom` was deliberately not installed: adding a dependency
 to write `toBeDisabled()` instead of reading `.disabled` is not a trade this sprint needs.
 
-### Phase 5: Workers Runtime Verification and Documentation - PLANNED
+### Phase 5: Workers Runtime Verification and Documentation - COMPLETED
 
 **Objective**: Prove it works on the real runtime, not just under jsdom, and leave the
 documentation true.
@@ -856,6 +856,65 @@ documentation true.
 - Pasted output from all four commands and the `preview` journey
 - `AGENTS.md` updated
 - This PRD updated: Troubleshooting, Acceptance Criteria, Current Status
+
+**Outcome** (August 30, 2026): all four checks clean - 385 tests across 22 files, `eslint .`
+silent at exit 0, `npx tsc --noEmit` silent at exit 0, and `next build` compiling with the route
+table unchanged from Phase 4. The `Badge` warning carried since Sprint 1 is gone with the
+placeholder page that produced it, so the lint output is now genuinely empty rather than
+tolerably noisy.
+
+**The journey was walked on the Workers runtime, not the dev server.** `npm run preview` built
+through OpenNext and served on `127.0.0.1:8787` with `env.DB (aisprint-quizmaker-db)` bound as a
+local D1 database, and the same headless-Chrome driver used in Phase 4 was pointed at 8787.
+Every observation matched the Node dev server: two choice rows on arrival with both remove
+buttons disabled, the menu holding exactly Edit/Preview/Delete, the edit form prefilled with
+`Paris, Lyon, Nice` and the correct mark on the first, Submit disabled until a choice is picked,
+**Incorrect** then **Correct**, cancel leaving the row alone, and confirm emptying the table.
+Nothing behaved differently on workerd - which is worth recording, because Sprint 1's reason for
+insisting on this step was that password hashing did differ.
+
+**The end-to-end evidence, read straight out of D1 while the preview was still serving.** The
+question row stored `created_by` NULL, as designed. Its choices stored the correct flag on the
+right row and kept their order:
+
+```
+{ "position": 0, "choice_text": "Paris",    "is_correct": 1 }
+{ "position": 1, "choice_text": "Lyon",     "is_correct": 0 }
+{ "position": 2, "choice_text": "Nice",     "is_correct": 0 }
+{ "position": 3, "choice_text": "Toulouse", "is_correct": 0 }
+```
+
+and the attempts, joined back to the choice each one selected, agree with it:
+
+```
+{ "user_id": null, "selected": "Nice",  "choice_is_correct": 0, "attempt_is_correct": 0 }
+{ "user_id": null, "selected": "Paris", "choice_is_correct": 1, "attempt_is_correct": 1 }
+```
+
+That join is the point of the whole design: `attempt_is_correct` was not sent by the browser, it
+was derived from `choice_is_correct` at the moment the attempt was recorded. Deleting the
+question through the confirmation dialog then took `questions: 1, choices: 4, attempts: 2` to
+`0, 0, 0` in one step.
+
+**Answer-key and probing checks, repeated against the runtime.** `GET /api/mcq/[id]` returned
+choices carrying exactly `id, text, position`, with zero occurrences of `isCorrect` or
+`is_correct` in the raw response body. The preview page's HTML contained zero occurrences of
+`is_correct`, `isCorrect`, **or even the word "correct"**. Scoring question A with a choice
+belonging to question B returned `404 {"error":"Question not found"}` - byte-identical to the
+404 for a question ID that does not exist. A body sending `isCorrect: true` alongside a wrong
+choice was answered `{"attempt":{"isCorrect":false,...}}`. Validation still rejected a
+one-choice body with the same `400` and the same wording as under Vitest.
+
+**The generated-bundle problem did not occur, because the setup was already right.** After the
+preview run, `.wrangler/` held 17 files and `.open-next/` held 1,210, and `npm run lint` still
+exited 0 with no output while `git status --short` printed nothing at all. `.wrangler/**` and
+`.open-next/**` were already in the ESLint ignores and `.gitignore` from Sprint 1. Nothing was
+added and no package was installed - the correct outcome for a warning that turns out to be
+already handled.
+
+Three real problems were hit and are written up in the Troubleshooting Guide: the dev server's
+watcher blocking the OpenNext build, orphaned `workerd` processes surviving the npm wrapper, and
+Node 26 refusing to spawn `npx.cmd`.
 
 **Phase 5 is still local-only.** Nothing is deployed here and the remote database is untouched.
 Deployment is the separate close-out below, and it begins only after Kusuma has reviewed and
@@ -1086,13 +1145,14 @@ DevTools protocol. Re-confirmed on the Workers runtime in Phase 5.
 
 **Process**
 
-- [ ] Tests were written before implementation in every phase and observed failing first
-- [ ] `npm run test`, `npm run lint`, `npx tsc --noEmit`, and `npm run build` all pass
-- [ ] The full journey works under `npm run preview` on the Workers runtime
+- [x] Tests were written before implementation in every phase and observed failing first
+- [x] `npm run test`, `npm run lint`, `npx tsc --noEmit`, and `npm run build` all pass
+- [x] The full journey works under `npm run preview` on the Workers runtime
 - [x] Only the four named shadcn components were added; no other dependency - verified in Phase 4
-- [ ] Any package that did prove necessary was installed with a real `npm install` and appears in
-      `package.json`, with no manual `node_modules` edits, junctions, or copied folders
-- [ ] Nothing was deployed and the remote database was untouched **for the whole of Phases 1
+- [x] Any package that did prove necessary was installed with a real `npm install` and appears in
+      `package.json`, with no manual `node_modules` edits, junctions, or copied folders - vacuously
+      true, since no package proved necessary and `package.json` is byte-identical to Sprint 1's
+- [x] Nothing was deployed and the remote database was untouched **for the whole of Phases 1
       through 5**
 - [x] The build's route table lists exactly the six intended routes, and no `*.test.ts` file was
       picked up as a route - verified in Phase 3
@@ -1113,12 +1173,12 @@ DevTools protocol. Re-confirmed on the Workers runtime in Phase 5.
 
 | Metric | Target | How Measured |
 |---|---|---|
-| Question creation | A teacher can go from `/mcq` to a saved question in one form submission | Manual walkthrough under `npm run preview` |
-| Answer integrity | 0 of N forged-correctness requests are scored as correct | Phase 3 test plus a manual `curl` in Phase 5 |
-| Attempt capture | 100% of preview submissions produce an `mcq_attempts` row | `SELECT COUNT(*)` before and after |
-| Referential integrity | 0 orphaned choice or attempt rows after a delete | `wrangler d1 execute --local` after Phase 1 task 7 |
-| Scope discipline | 0 items from the Not Building list implemented | Review of this PRD against the diff at Phase 5 |
-| Test coverage of failure paths | Every 400 and 404 in the API section has a test | Count against the endpoint list |
+| Question creation | A teacher can go from `/mcq` to a saved question in one form submission | Manual walkthrough under `npm run preview` - **met**, walked on 8787 |
+| Answer integrity | 0 of N forged-correctness requests are scored as correct | Phase 3 test plus a manual request in Phase 5 - **met**, 0 of 2 |
+| Attempt capture | 100% of preview submissions produce an `mcq_attempts` row | `SELECT COUNT(*)` before and after - **met**, 2 submissions, 2 rows |
+| Referential integrity | 0 orphaned choice or attempt rows after a delete | `wrangler d1 execute --local` after Phase 1 task 7 - **met**, 1/4/2 to 0/0/0 |
+| Scope discipline | 0 items from the Not Building list implemented | Review of this PRD against the diff at Phase 5 - **met**, and no dependency added either |
+| Test coverage of failure paths | Every 400 and 404 in the API section has a test | Count against the endpoint list - **met**, and each re-confirmed on the runtime |
 | Batch atomicity | 0 orphaned question rows after a deliberately failed batch | Phase 2 task 6, against the real local database - met: 0 orphans |
 | Deployment | A live URL serving the full journey | Close-out task 7, walked by hand against the deployed Worker |
 | Remote schema parity | Remote `PRAGMA table_info` matches local for all four tables | Close-out task 5 |
@@ -1430,16 +1490,64 @@ navigates, so announcing it as a button is worse than the warning was.
 **Wider lesson**: this only surfaced because the browser console was read during the walkthrough.
 The tests passed throughout, and the build never mentioned it.
 
-### Anticipated (to be confirmed or removed in Phase 5)
+### Resolved (Phase 5): `npm run preview` fails with EPERM before it compiles anything
 
-**`db.batch()` and the test fake** - Sprint 1's fake D1 exposes only `prepare`, `bind`, and
-`all`. Calling `batch()` against it throws `TypeError: db.batch is not a function`. Phase 2 task 1
-extends the fake; this entry stays until that is done.
+**Symptom**: the OpenNext build died immediately, on its own output directory:
 
-**A `CHECK` violation surfaces as a generic D1 error**, not a typed one, much as the `UNIQUE`
-violation did in Sprint 1 - see `uniqueConflictColumn` in `user-service.ts:54`. If `is_correct` or
-choice-count validation needs to be distinguished at the service boundary, it will need the same
-message-matching treatment.
+```
+Error: EPERM, Permission denied: \\?\C:\aisprint-quizmaker\aisprint-quizmaker\.open-next
+    at Object.rmSync (node:fs:1206:18)
+    at Module.initOutputDir (.../@opennextjs/aws/dist/build/helper.js:348:8)
+```
+
+**Cause**: `npm run dev` was still running. Its file watcher holds a handle on
+`.open-next/assets`, and on Windows an open directory handle makes the directory
+undeletable - `Remove-Item` gave *"The process cannot access the file ... because it is being
+used by another process."* OpenNext starts by clearing its output directory, so it never got as
+far as the Next build. No `workerd` or `wrangler` process was running, which is what ruled out
+the cause `AGENTS.md` already documented and pointed at the dev server instead.
+
+**Resolution**: stop `npm run dev` before `npm run preview`. Now recorded in `AGENTS.md` under
+the preview gotchas, alongside the orphaning problem, since the two look identical from the error
+message and have different fixes.
+
+### Resolved (Phase 5): stopping the preview leaves the runtime serving
+
+**Symptom**: after killing the `npm run preview` process, `127.0.0.1:8787` was still answering
+and `.open-next/` was still locked.
+
+**Cause**: the tree is five processes deep - npm, `@opennextjs/cloudflare`, `wrangler.js`, its
+node child, and **two** `workerd.exe`. Killing the npm wrapper orphans everything below it.
+`AGENTS.md` warned about this in the singular; there are two `workerd` processes, not one.
+
+**Resolution**: find the listener with
+`(Get-NetTCPConnection -LocalPort 8787 -State Listen).OwningProcess`, then walk up
+`ParentProcessId` via `Get-CimInstance Win32_Process` and stop the whole tree. Confirm with the
+port check *and* by deleting `.open-next/`, since the port can free before the file handles do.
+
+### Resolved (Phase 5): Node 26 will not spawn `npx.cmd`
+
+**Symptom**: the walkthrough driver aborted at the database step with
+`FAILED: spawnSync npx.cmd EINVAL`, after the UI half had already passed.
+
+**Cause**: Node 26 refuses to execute `.cmd` and `.bat` files through `child_process.execFile`
+without `shell: true`. Passing `shell: true` would have worked but would then have put SQL
+containing spaces, commas, and quotes through the Windows command parser.
+
+**Resolution**: run wrangler's JavaScript entry point under `process.execPath` -
+`node node_modules/wrangler/bin/wrangler.js d1 execute ...`. No shell, so no quoting, and the SQL
+is passed as a single argv element unchanged.
+
+### Confirmed harmless (Phase 5): the anticipated problems
+
+**`db.batch()` and the test fake** - happened as expected in Phase 2 and was fixed there by
+extending the fake to record batches. Kept here only so the prediction and its outcome stay
+together.
+
+**A `CHECK` violation surfaces as a generic D1 error** - still true, and still not a problem.
+Nothing in the feature needs to distinguish a `CHECK` failure at the service boundary, because
+Zod rejects those bodies before any SQL runs; the constraint is a backstop, not a control flow.
+No `uniqueConflictColumn`-style message matching was needed and none was added.
 
 ---
 
@@ -1486,17 +1594,21 @@ message-matching treatment.
 ## Current Status
 
 **Last Updated**: August 30, 2026 (revision 5 - Phase 3 complete)
-**Current Phase**: Phase 4 complete, awaiting review. Phase 5 not started.
+**Current Phase**: Phase 5 complete, awaiting review. All five phases built. Deployment
+Close-Out not started.
 **Status**: AWAITING REVIEW
 **Live URL**: none yet - recorded here by Deployment Close-Out task 9
 
 **What exists**: The branch `feature/mcq-crud`, cut from `main` at `215b615`. Committed: planning
-(`65aaaee`), Phase 1 (`dc2fa74`), Phase 2 (`08bc57e`), Phase 3 (`d1e1e71`). Uncommitted on top of
-that: five components under `src/components/mcq/` with four colocated test files,
-`src/lib/mcq-client.ts`, four shadcn components under `src/components/ui/`, a rewritten
-`src/app/mcq/page.tsx`, a new `src/app/mcq/layout.tsx`, and the three new pages. The migration is
-applied to the **local** database only. No dependencies added, nothing deployed, remote database
-untouched.
+(`65aaaee`), Phase 1 (`dc2fa74`), Phase 2 (`08bc57e`), Phase 3 (`d1e1e71`), Phase 4 (`7c2b177`).
+Uncommitted on top of that: this document and `AGENTS.md`, both updated by Phase 5. Phase 5 wrote
+no application code, which is the point of it - it was verification, and verification that has to
+change the thing it is verifying has failed.
+
+The feature is complete and works on both runtimes: three tables, a service, six endpoints, four
+pages, and 385 tests. Both migrations are applied to the **local** database only. `package.json`
+is unchanged from Sprint 1 - no dependency was added at any point in this sprint. Nothing has been
+deployed and the remote database has never been touched.
 
 **Phase 1 result**: 25 migration assertions pass. All six Schema acceptance criteria ticked, plus
 a seventh added for foreign-key enforcement.
@@ -1514,8 +1626,21 @@ plus the route-table Process criterion.
 that carried it. Four shadcn components added and no dependency. The full journey was walked in a
 real headless Chrome over the DevTools protocol, and every UI acceptance criterion is ticked
 against what was observed there rather than by reading the code. Two Base UI problems were found
-and written into the Troubleshooting Guide. The Deployment criteria stay open, as do the
-remaining Process criteria, because Phase 5 can still break them.
+and written into the Troubleshooting Guide.
+
+**Phase 5 result**: all four checks clean - 385 tests across 22 files, `eslint .` silent at exit
+0, `npx tsc --noEmit` silent at exit 0, `next build` compiling with the route table unchanged.
+The full journey was walked on the Workers runtime at `127.0.0.1:8787` under `npm run preview`
+and behaved identically to the Node dev server. D1 was read mid-flow: choices stored with the
+correct flag on the right row and in position order, and attempt rows whose `is_correct` matched
+the selected choice's stored flag rather than anything the browser sent. The delete cascade took
+1 question, 4 choices, and 2 attempts to zero. The answer key was absent from both the API
+payload and the preview page's HTML on the runtime, and cross-question scoring returned a 404
+identical to the unknown-question 404. `.wrangler/` and `.open-next/` were already ignored by
+both ESLint and git, so lint stayed clean and `git status` stayed empty with 1,227 generated
+files on disk; nothing was added. Three runtime and tooling problems were hit and written into
+the Troubleshooting Guide. **All Schema, Service, API, UI, and Process criteria are now ticked.**
+Only the Deployment close-out criteria remain open.
 
 **Revision 2 changed**: deployment moved out of Out of Scope into a required Deployment Close-Out
 after Phase 5, with Out of Scope, Acceptance Criteria, Known Limitations, Success Metrics, and
@@ -1524,7 +1649,8 @@ a build route-table check added as Phase 3 task 6; toast and animation libraries
 and soft delete added to Not Building; and two working habits - proper `npm install` and no silent
 post-phase edits - written into Notes for AI Agents.
 
-**Next Steps**: Kusuma reviews Phase 4. On approval, commit and push it, then begin Phase 5:
-the four checks with real output, the full journey under `npm run preview` on the Workers
-runtime, the D1 and answer-key confirmations, and the `AGENTS.md` update. Phase 5 is still
-local-only; deployment is the separate close-out after Phase 5 is approved.
+**Next Steps**: Kusuma reviews Phase 5. On approval, commit and push it. That closes the phased
+build, and the Deployment Close-Out becomes the remaining work: apply both migrations to the
+remote database, run `npm run deploy`, walk the journey against the live URL, and record that URL
+here. **The close-out does not begin until Phase 5 is approved**, and it is the first and only
+point in this sprint where the remote database and `npm run deploy` are in play.
